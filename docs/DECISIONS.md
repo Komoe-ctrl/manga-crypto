@@ -306,6 +306,60 @@ Comme aux étapes 6 à 8 : base temporaire, Redis n° 9, historique réel de Bin
 
 ---
 
+## Étape 10 — Exécution des ordres
+
+### D75. Le module d'ordres est livré en deux étapes ; `ccxt` ajouté
+Étape 10 : **exécution** (cette étape). Étape 11 : **consommation des signaux** du moteur (Redis Stream `signals`), avec la définition de leur format dans `docs/SPEC.md` (le moteur `crypto-engine` n'émet encore rien et la SPEC ne définit pas ce format). `ccxt` est dans la stack de la SPEC (section B) : seule dépendance ajoutée, utilisée uniquement dans `CcxtGateway`.
+
+### D76. Un point d'entrée unique : `OrdersService.submit(userId, intent)`
+L'API manuelle, le futur consommateur de signaux et la surveillance des stop-loss / take-profit construisent tous une `OrderIntent` (symbole, sens, quantité, origine) et passent par les **mêmes garde-fous**. Origines : `MANUAL`, `SIGNAL`, `STOP_LOSS`, `TAKE_PROFIT`. Un ordre refusé n'est jamais perdu en silence : il est enregistré (`REJECTED`) avec un **code de motif stable** (`failureReason`, voir `REJECTION_MESSAGES`) et audité.
+
+### D77. Garde-fous, dans l'ordre
+1. **Mode** : un ordre manuel est refusé en LIVE (D83). 2. **Symbole** : les stablecoins ne se négocient pas (pas de paire `USDT/USDT`). 3. **Robot actif** : kill switch ou pause pour perte journalière (`TradingControlService.status`), **y compris pour les ventes**. 4. **Vente** : quantité détenue suffisante. 5. **Achat** : prix disponible ; **capital total calculable** (sinon `capital_unknown` : jamais d'ordre à l'aveugle, D38) ; capital nul → `insufficient_funds` (plus clair qu'« exposition dépassée ») ; **exposition maximale** : (position déjà détenue + cet achat) × prix ≤ `maxExposurePct` × capital (SPEC module 2, égalité autorisée) ; **fonds** en PAPER seulement (l'achat est payé avec l'USDT déclaré, frais compris) — en LIVE, la plateforme fait foi.
+Les garde-fous sont **revérifiés au moment d'agir** (D79) : le kill switch ou le mode ont pu changer entre la création et l'exécution.
+
+### D78. `clientOrderId` idempotent : un retry ne double jamais un ordre
+Généré **avant** tout appel (`vl-` + 32 hexadécimaux = 35 caractères, limite Binance 36), conservé pour tous les essais, unique en base, et utilisé comme `jobId` BullMQ (le même ordre ne peut pas être mis en file deux fois). Surtout : **avant chaque création, on cherche l'ordre par son `clientOrderId`** sur la plateforme. Le cas dangereux est celui où l'ordre est créé mais la réponse se perd (erreur réseau) : au retry, l'ordre est retrouvé et réconcilié, pas recréé. Testé explicitement (réponse perdue → un seul ordre sur la plateforme).
+
+### D79. États, prise atomique et reprise
+`PENDING` → `SUBMITTED` par `UPDATE … WHERE status = 'PENDING'` : deux exécutions simultanées ne passent qu'un ordre. Un ordre **déjà `SUBMITTED` n'est jamais abandonné** par un garde-fou (kill switch, pause) : il est parti, il doit se terminer ou se réconcilier. Une exécution déjà enregistrée n'est appliquée au portefeuille qu'une fois (mise à jour conditionnelle sur le statut).
+**Dernier essai épuisé (`giveUp`)** : un ordre qui n'a jamais atteint la plateforme passe en `FAILED` (`retries_exhausted`) ; un ordre **LIVE peut être parti sans qu'on le sache** : il reste en l'état (pas `FAILED`, ce serait mentir), l'audit `order.unsettled` est écrit et l'utilisateur est prévenu **en critique** de le vérifier sur sa plateforme, avec son `clientOrderId`.
+
+### D80. File BullMQ `orders`, exécution immédiate si les jobs sont désactivés
+5 essais, délai exponentiel (2 s, 4 s, 8 s, 16 s), `concurrency: 1` (jamais deux ordres en parallèle). Une erreur transitoire (`RetryableOrderError` : prix, plateforme, ordre pas encore soldé) fait réessayer ; le dernier essai épuisé appelle `giveUp`. Avec `BACKGROUND_JOBS_ENABLED=false` (tests, instance sans jobs), l'ordre est exécuté **dans la requête**, sans nouvel essai : une erreur transitoire abandonne alors l'ordre proprement.
+
+### D81. PAPER : simulateur, frais de 0,1 %, et le portefeuille reste cohérent
+Exécution au prix courant, frais fictifs de 0,1 % (comme un ordre au marché standard). Chaque exécution met à jour le portefeuille déclaré avec **deux jambes** : l'actif échangé **et l'USDT** ; sans la contrepartie en USDT, le capital gonflerait à chaque achat (et l'exposition maximale n'aurait aucun sens). Conséquence pratique : **il faut déclarer son capital en USDT** (`PUT /api/portfolio/assets/USDT`) avant de pouvoir acheter en PAPER. Les jambes sont plafonnées à ce qui est détenu. Un échec de mise à jour du portefeuille est journalisé sans défaire l'ordre ; en cas de plantage entre l'enregistrement de l'exécution et la mise à jour du portefeuille, celle-ci est perdue (au plus une fois, jamais deux : choix assumé, l'audit garde la trace de l'exécution).
+
+### D82. LIVE : `ExchangeGateway`, clés déchiffrées à chaque ordre
+Le module d'ordres est le seul à déchiffrer les clés, via `ExchangesService.getLiveCredentials`, **à chaque ordre** : l'éligibilité (active, vérifiée, hors testnet) est revérifiée à chaque fois, ce qui solde la limite de D28. `ExchangeGateway` est une classe abstraite (jeton d'injection) ; `CcxtGateway` l'implémente.
+- **Erreurs réduites à un code** : les messages de `ccxt` peuvent citer une URL ou une réponse ; seul le nom de l'erreur est gardé. Refus définitif (`GatewayRejectedError` : fonds insuffisants, ordre invalide, clé refusée, paire inconnue, sous le minimum) ou panne transitoire (`GatewayUnavailableError` : réseau, délai, limite de débit, erreur inconnue → on réessaie).
+- **Marchés** (précisions, minimums) : chargés avec une instance **sans clés** (données publiques), mis en cache 1 h. Défaut trouvé par la vérification réelle : avec des clés, `ccxt` ajoute un appel signé au chargement ; s'il échoue (clé refusée), il masquait tous les autres contrôles. La quantité est arrondie à la précision de la paire ; un arrondi à zéro ou sous le minimum donne `below_minimum` avant tout envoi.
+- **Exécution partielle** : seule la part nouvellement exécutée est appliquée au portefeuille ; un ordre encore ouvert fait réessayer (réconciliation par recherche du `clientOrderId`) ; annulé après une exécution partielle → `PARTIALLY_FILLED` soldé.
+- **Frais** : en USDT, déduits de la jambe USDT ; dans l'actif de base, déduits de la quantité reçue ; dans une autre devise (BNB…), enregistrés sur l'ordre sans effet sur le portefeuille. En LIVE, la plateforme fait foi : une jambe est plafonnée à ce qui est détenu côté portefeuille déclaré.
+
+### D83. Les ordres manuels sont réservés au mode PAPER
+`POST /api/orders` refuse en LIVE (`manual_orders_paper_only`, 422, ordre enregistré) tant que le consommateur de signaux n'existe pas : le seul moyen de mettre de l'argent réel en jeu doit être le robot, après gestion des risques. À rouvrir explicitement si besoin.
+
+### D84. Stop-loss et take-profit : programmés à l'exécution, surveillés à la minute
+À l'exécution d'un achat, les deux niveaux sont calculés sur le **prix moyen exécuté** avec les réglages de l'utilisateur et enregistrés sur l'ordre. Un job (`order-exits`, chaque minute) compare le prix courant aux niveaux des positions ouvertes (`exitTriggeredAt` nul) et vend la quantité de l'entrée par `submit` (mêmes garde-fous). **Aucun ordre « stop » n'est posé sur la plateforme** : la protection est celle d'un contrôle par minute, tant que l'application tourne et que la source de prix répond.
+- **Robot arrêté ou en pause** : aucune vente, **y compris une sortie** (le kill switch est un arrêt explicite). Le déclenchement n'est pas consommé (il repart dès que le robot repart) et l'utilisateur est prévenu **en critique**, une fois par jour. *Risque assumé et documenté : une position peut rester sans protection tant que le robot est arrêté.*
+- **Prise atomique** de la position (`exitTriggeredAt`) : une position ne déclenche qu'une sortie, même si deux passages se croisent. Quantité vendue = `min(quantité de l'entrée, quantité détenue)` ; rien à vendre (vente manuelle entre-temps) → déclenchement consommé, audit `order.exit_skipped`.
+- **Sortie refusée** (ex. plus d'échange éligible en LIVE) : le déclenchement reste consommé (pas de boucle d'ordres refusés chaque minute) et l'utilisateur est prévenu en critique.
+- Prix indisponible ou manquant : on ne conclut pas (D38, D45, D60).
+
+### D85. Annulation : seulement avant la prise en charge
+`POST /api/orders/:id/cancel` n'annule qu'un ordre `PENDING` (mise à jour conditionnelle) ; un ordre au marché déjà parti ne s'annule pas (409). L'exécuteur ne reprend jamais un ordre annulé.
+
+### D86. Notifications des ordres
+Exécution : « Ordre exécuté » (non critique, donc retenue la nuit) ; **stop-loss exécuté : critique** (SPEC 3) ; take-profit exécuté : non critique ; refus en LIVE ou d'une sortie, ordre abandonné, ordre à vérifier : **critique**. Un refus d'ordre manuel en PAPER ne notifie pas (la réponse 422 le dit). Clés de déduplication par ordre ; un échec de notification ne défait jamais un ordre.
+
+### D87. Vérification sur le vrai système (PostgreSQL, Redis, Binance, `ccxt`)
+Comme aux étapes 6 à 9, plus le vrai `ccxt` avec de **fausses clés** (aucun fonds, aucun ordre possible). Constaté : achat PAPER passé par la file BullMQ avec les vrais cours (réponse immédiate `PENDING`, puis `FILLED` par le worker, frais, stop-loss et take-profit, portefeuille cohérent) ; refus d'exposition ; sortie stop-loss déclenchée par le job, notifiée en critique, un seul déclenchement ; refus du kill switch ; audit cohérent. Vrai `ccxt` : clé refusée → `exchange_auth`, aucune clé dans l'erreur ; paire inconnue → `invalid_symbol` ; sous le minimum → `below_minimum`. **Défauts trouvés** : chargement des marchés avec clés qui masquait les contrôles (corrigé, D82) ; `InvalidOrder` de l'arrondi qui sortait en `invalid_order` au lieu de `below_minimum` (corrigé).
+*Non couvert :* **aucun ordre LIVE réel n'a été passé** (ni testnet, ni clé réelle) ; la chaîne LIVE est couverte par des tests avec une fausse plateforme et par la vérification des erreurs réelles ci-dessus. **Avant tout usage LIVE réel : un essai sur le testnet Binance avec une clé dédiée.**
+
+---
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
@@ -316,6 +370,11 @@ Comme aux étapes 6 à 8 : base temporaire, Redis n° 9, historique réel de Bin
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
+| **Étape 11** : consommation des signaux | Voir D75 : lire le Redis Stream `signals`, définir leur format dans `docs/SPEC.md` (le moteur doit l'implémenter), dimensionner la position (`maxPositionValue`), puis `OrdersService.submit` avec l'origine `SIGNAL`. Rouvrir D83 si l'on veut des ordres manuels en LIVE. |
+| Essai sur le testnet Binance | Voir D87 : aucun ordre réel n'a été passé. À faire avec une clé testnet dédiée (jamais dans git) avant tout usage LIVE ; le testnet n'expose pas `apiRestrictions` (D20), la configuration devra être étendue aux ordres testnet. |
+| Ordres stop natifs sur la plateforme | Voir D84 : la protection actuelle est un contrôle par minute, sans effet si l'application est arrêtée ; un ordre stop posé côté plateforme protégerait aussi pendant une panne. |
+| Réconciliation périodique des soldes | Le portefeuille est déclaratif (D32) et diverge de la plateforme (frais, dépôts) : lire les soldes réels (`fetchBalance`) et signaler l'écart, ce qui permettrait aussi d'inclure les pertes dues aux ordres dans la perte journalière (D43). |
+| Passerelle d'ordres pour Kraken | Voir D18 : sans vérificateur de permissions ni passerelle, Kraken reste refusé. |
 | Rapport du matin : stablecoins et soldes | La maquette mentionne « 4 200 USDC disponibles » ; sans lecture des soldes sur la plateforme (module d'ordres), le rapport ne couvre que les positions déclarées. |
 | Rapport du matin : « Hier » | Voir D67 : le front lit le rapport `TODAY` précédent ; l'enum `YESTERDAY` est inutilisé. À retirer lors d'une prochaine migration du schéma. |
 | Purge des anciens rapports | La table `digest_reports` grossit d'une ligne par jour et par utilisateur (plus une par semaine). |

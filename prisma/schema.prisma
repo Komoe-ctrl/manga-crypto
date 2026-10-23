@@ -50,6 +50,17 @@ enum OrderType {
   LIMIT
 }
 
+enum OrderOrigin {
+  /// Ordre saisi par l'utilisateur (mode PAPER uniquement).
+  MANUAL
+  /// Signal du moteur d'analyse, après gestion des risques.
+  SIGNAL
+  /// Sortie automatique : le prix a atteint le stop-loss de la position.
+  STOP_LOSS
+  /// Sortie automatique : le prix a atteint le take-profit de la position.
+  TAKE_PROFIT
+}
+
 enum OrderStatus {
   PENDING
   SUBMITTED
@@ -345,6 +356,16 @@ model TradeLog {
   signalPayload  Json?
   failureReason  String?
 
+  /// D'où vient l'ordre : saisie manuelle, signal du moteur, ou sortie automatique (stop-loss / take-profit).
+  origin          OrderOrigin @default(MANUAL)
+  /// Ordre d'entrée dont cet ordre est la sortie (STOP_LOSS / TAKE_PROFIT) ; null sinon.
+  parentOrderId   String?
+  parentOrder     TradeLog?   @relation("OrderExit", fields: [parentOrderId], references: [id], onDelete: Restrict)
+  exitOrders      TradeLog[]  @relation("OrderExit")
+  /// Renseigné quand la sortie de cette position (stop-loss ou take-profit) a été déclenchée : la position
+  /// n'est plus surveillée. Null = position encore ouverte et surveillée.
+  exitTriggeredAt DateTime?
+
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   executedAt DateTime?
@@ -352,6 +373,7 @@ model TradeLog {
   @@index([userId, createdAt])
   @@index([status])
   @@index([signalStreamId])
+  @@index([parentOrderId])
   @@map("trade_logs")
 }
 
