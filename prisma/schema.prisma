@@ -120,8 +120,27 @@ model User {
   alertConfigs         AlertConfig[]
   digestReports        DigestReport[]
   auditLogs            AuditLog[]
+  refreshTokens        RefreshToken[]
 
   @@map("users")
+}
+
+/// Refresh token opaque : seul son hash SHA-256 est stocké. Rotation à chaque usage ;
+/// `familyId` regroupe la chaîne de rotation pour tout révoquer en cas de réutilisation d'un token déjà consommé.
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  familyId  String
+  expiresAt DateTime
+  /// Renseigné quand le token a été consommé (rotation), révoqué (logout) ou invalidé (réutilisation).
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
 }
 
 model NotificationSettings {

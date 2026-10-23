@@ -1,0 +1,2 @@
+# Les migrations Prisma sont checksumées : fins de ligne LF imposées pour éviter les faux « migration modifiée » sous Windows.
+prisma/migrations/** text eol=lf
