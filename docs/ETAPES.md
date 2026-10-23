@@ -184,7 +184,7 @@ Aucune route nouvelle. La pause se lève seule à minuit local ; il n'y a pas de
 
 **Prérequis** : Redis démarré (`npm run db:up`), `REDIS_URL` dans `.env`, migration appliquée (`npm run prisma:migrate`, ou `npx prisma migrate deploy`).
 
-**Variable** : `RISK_MONITOR_ENABLED` (`true` par défaut) ; `false` désactive la surveillance et n'ouvre aucune connexion Redis. Les tests la posent à `false`.
+**Variable** : `BACKGROUND_JOBS_ENABLED` (`true` par défaut ; elle s'appelait `RISK_MONITOR_ENABLED` avant l'étape 8) ; `false` désactive tous les jobs de fond et n'ouvre aucune connexion Redis. Les tests la posent à `false`.
 
 **Journal d'audit** : `risk.daily_loss_paused` — `metadata` : `localDate`, `openEquity`, `currentValue`, `lossPct`, `maxDailyLossPct`, `pausedUntil`.
 
@@ -276,3 +276,37 @@ await notifications.notify(userId, {
 **Alerte de perte journalière** : la pause envoie désormais une notification critique `Perte journalière maximale atteinte` (clé `daily-loss:<jour local>`), sans jamais défaire la pause en cas d'échec d'envoi (D54).
 
 **Pas encore fait** : évaluation des alertes et rapport du matin (étape 8), envoyeurs Push et Email, temps réel (WebSocket), purge des anciennes notifications.
+
+## Étape 8 — Moteur d'évaluation des alertes
+
+**Livré** : `src/notifications/engine/` (`AlertEvaluator`, `alert-conditions.ts`, `alert-messages.ts`, `AlertsEngineProcessor` / `AlertsEngineScheduler`, `AlertsEngineModule`), `src/queue/` (`QueueModule`, `RedisConnection`), `PriceProvider.getPriceAt`, migration `add_alert_triggered_state` (colonne `alert_configs.isTriggered`). **Aucune dépendance ajoutée.**
+
+**Fonctionnement** : toutes les minutes, un job BullMQ évalue chaque alerte active (d'un utilisateur actif) sur les prix :
+1. prix courants (un appel pour tous les symboles) et, pour les variations, prix à `maintenant − fenêtre` (bougies d'une minute de Binance) ;
+2. condition remplie **et** alerte armée → l'alerte passe en « déclenchée » et la notification part, sur le **canal de l'alerte** ;
+3. condition redevenue fausse **et** alerte déclenchée → l'alerte se ré-arme ;
+4. donnée manquante → aucun changement d'état.
+
+Aucune route nouvelle. `GET /api/alerts` expose désormais `isTriggered` (`false` = armée) et `lastTriggeredAt`.
+
+| Cas | Comportement |
+|---|---|
+| Condition vraie, alerte armée | Notification (une seule), `isTriggered = true` |
+| Condition toujours vraie | Silence |
+| Condition redevenue fausse | `isTriggered = false` (ré-armée) |
+| Nouveau franchissement < 15 min après le précédent | Retenu (anti-rebond) ; notifié plus tard si la condition est toujours vraie |
+| Seuil, fenêtre ou `isActive` modifié | Alerte ré-armée |
+| Prix (ou historique) indisponible | Alerte ignorée, état inchangé |
+| Envoi en erreur | État rendu, nouvel essai au passage suivant |
+
+**Messages** (même tournure que la maquette) : `BTC −5 % en 1 h`, `SOL +8 % sur 24 h`, `ETH franchit 3 500 $ à la hausse`, `ETH passe sous 3 000 $`, `Portefeuille −10 % sur 7 jours`. Le texte donne la variation réelle et le prix actuel.
+
+**Mode Nuit** : appliqué selon `isCritical` — une alerte non critique la nuit est mise en attente (`HELD`) et attend le rapport du matin (étape 9) ; une alerte critique passe toujours.
+
+**Jobs de fond** : `BACKGROUND_JOBS_ENABLED=false` désactive la surveillance de la perte journalière **et** l'évaluation des alertes (voir étape 6).
+
+**Résultat d'un passage** : `{ evaluated, triggered, rearmed, skipped, failed }` (visible dans les jobs terminés de la file `alerts-engine`).
+
+**Vérifier sur un vrai Redis** : même procédure que pour l'étape 6 (base temporaire, Redis n° 9, `npx prisma migrate deploy`), puis créer une alerte `PRICE_CROSS_ABOVE` avec un seuil de `1` (toujours dépassé) et ajouter un job `evaluate` à la file `alerts-engine` : une notification apparaît dans `GET /api/notifications` et l'alerte passe `isTriggered: true`. Un second passage ne notifie pas.
+
+**Pas encore fait** : rapport du matin (étape 9), envoyeurs Push et Email (sans eux, `channel: "PUSH"` ou `"EMAIL"` donne `channel_not_implemented`), prix observé et écart au seuil exposés par l'API, cache Redis des prix.

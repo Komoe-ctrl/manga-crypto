@@ -10,6 +10,13 @@ export abstract class PriceProvider {
   abstract getPrices(
     symbols: string[],
   ): Promise<Map<string, Prisma.Decimal | null>>;
+
+  /**
+   * Prix d'un symbole à un instant passé (variations sur une fenêtre : « −5 % en 1 h »). `null` si la source n'a
+   * pas de donnée à cette date (actif pas encore coté).
+   * @throws PriceUnavailableError si la source est injoignable.
+   */
+  abstract getPriceAt(symbol: string, at: Date): Promise<Prisma.Decimal | null>;
 }
 
 export class PriceUnavailableError extends Error {

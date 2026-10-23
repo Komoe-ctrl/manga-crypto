@@ -197,6 +197,7 @@ export class FakePrisma {
     create: async ({ data, select }: Row) => {
       const row = {
         id: randomUUID(),
+        isTriggered: false,
         lastTriggeredAt: null,
         createdAt: this.tick(),
         ...data,
@@ -204,11 +205,24 @@ export class FakePrisma {
       this.alertConfigs.push(row);
       return pick({ ...row }, select);
     },
-    findMany: async ({ where, select }: Row) =>
-      this.alertConfigs
-        .filter((a) => matches(a, where))
+    findMany: async ({ where, select }: Row) => {
+      // Filtre relationnel `user: { ... }` : porte sur le propriétaire de l'alerte.
+      const { user, ...own } = where;
+      return this.alertConfigs
+        .filter((a) => matches(a, own))
+        .filter(
+          (a) =>
+            !user ||
+            matches(this.users.find((u) => u.id === a.userId) ?? {}, user),
+        )
         .sort((a, b) => a.createdAt - b.createdAt)
-        .map((a) => pick({ ...a }, select)),
+        .map((a) => pick({ ...a }, select));
+    },
+    updateMany: async ({ where, data }: Row) => {
+      const rows = this.alertConfigs.filter((a) => matches(a, where));
+      rows.forEach((a) => Object.assign(a, data));
+      return { count: rows.length };
+    },
     findFirst: async ({ where, select }: Row) => {
       const row = this.alertConfigs.find((a) => matches(a, where));
       return row ? pick({ ...row }, select) : null;

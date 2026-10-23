@@ -21,6 +21,11 @@ export interface NotifyInput {
   immediate?: boolean;
   /** Évite les doublons d'un même événement : un second appel avec la même clé renvoie la notification existante. */
   dedupeKey?: string;
+  /**
+   * Canal imposé (alerte configurée sur un canal précis, maquette) : la notification n'est envoyée que sur celui-là,
+   * sans tenir compte des canaux activés globalement dans les réglages. Absent : tous les canaux activés.
+   */
+  channel?: NotificationChannel;
 }
 
 export interface NotificationView {
@@ -146,7 +151,12 @@ export class NotificationService {
     }
     if (held) return created;
 
-    const deliveries = await this.dispatch(created, settings, user.email);
+    const deliveries = await this.dispatch(
+      created,
+      settings,
+      user.email,
+      input.channel,
+    );
     if (created.critical && !deliveries.some((d) => d.status === 'SENT')) {
       this.logger.warn(
         `Notification critique sans livraison sur aucun canal (userId=${userId})`,
@@ -224,12 +234,15 @@ export class NotificationService {
     notification: NotificationView,
     settings: DispatchSettings,
     userEmail: string,
+    forcedChannel?: NotificationChannel,
   ): Promise<DeliveryResult[]> {
-    const enabled: NotificationChannel[] = [
-      ...(settings.pushEnabled ? [NotificationChannel.PUSH] : []),
-      ...(settings.telegramEnabled ? [NotificationChannel.TELEGRAM] : []),
-      ...(settings.emailEnabled ? [NotificationChannel.EMAIL] : []),
-    ];
+    const enabled: NotificationChannel[] = forcedChannel
+      ? [forcedChannel]
+      : [
+          ...(settings.pushEnabled ? [NotificationChannel.PUSH] : []),
+          ...(settings.telegramEnabled ? [NotificationChannel.TELEGRAM] : []),
+          ...(settings.emailEnabled ? [NotificationChannel.EMAIL] : []),
+        ];
     const recipient = {
       telegramChatId: settings.telegramChatId,
       email: settings.notificationEmail ?? userEmail,

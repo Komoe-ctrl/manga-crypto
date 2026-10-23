@@ -366,6 +366,9 @@ model AlertConfig {
   isActive        Boolean             @default(true)
   /// Critique : passe même en Mode Nuit.
   isCritical      Boolean             @default(false)
+  /// État « déclenchée » : la condition est vraie et l'utilisateur a déjà été notifié. Repasse à faux quand la
+  /// condition redevient fausse (ré-armement), pour ne notifier qu'au franchissement.
+  isTriggered     Boolean             @default(false)
   lastTriggeredAt DateTime?
 
   createdAt DateTime @default(now())
