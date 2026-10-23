@@ -103,6 +103,39 @@ Un `select` explicite (`PUBLIC_SELECT`) liste les champs exposés ; les colonnes
 
 ---
 
+## Étape 4 — Gestion des risques et contrôle du robot
+
+### D25. Règles de risque en fonctions pures (`risk-rules.ts`)
+Taille maximale de position, dépassement d'exposition, prix de stop-loss / take-profit, perte journalière atteinte : calculs en `Decimal`, sans accès base ni effet de bord. Le module d'ordres les appellera avec les données du portefeuille, et elles se testent sans infrastructure. Les résultats ne sont pas arrondis : la précision dépend de la plateforme, l'arrondi revient à l'appelant.
+Cas limites décidés : capital nul ou négatif → toute position est refusée ; valeur d'ouverture nulle → pas de perte calculable (faux) ; égalité avec la limite d'exposition → autorisée, égalité avec la limite de perte journalière → déclenchée.
+
+### D26. Réglages bornés et audités
+Exposition max, perte journalière max et stop-loss dans ]0, 100] ; take-profit dans ]0, 1000] ; deux décimales au plus (un pourcentage à trois décimales est refusé plutôt qu'arrondi en silence). `PATCH` partiel : seuls les champs fournis changent. Chaque modification est auditée avec l'**ancienne et la nouvelle valeur** (`risk.settings_updated`) ; une requête qui ne change rien n'écrit rien.
+*Pourcentages renvoyés en nombres* (deux décimales sont exactes en flottant) ; les montants, eux, restent en `Decimal` côté serveur.
+
+### D27. Kill switch : une action, sans friction, idempotente
+L'activation ne demande ni mot de passe ni confirmation (SPEC : « en un clic »). Activer deux fois n'écrit qu'un audit. Il bloque **tous** les modes, PAPER compris. La réactivation n'est pas conditionnée non plus ; si cela devait changer (ré-authentification), ce serait une nouvelle décision.
+
+### D28. Passage en LIVE : ré-authentification, confirmation et prérequis
+Le passage en `LIVE` exige :
+1. le **mot de passe** du compte (ré-authentification) et la phrase **`PASSER EN LIVE`** recopiée exactement ;
+2. le kill switch **désactivé** ;
+3. au moins une configuration d'échange **`ACTIVE`, non `sandbox` et vérifiée** (applique D20).
+
+Chaque refus est audité avec sa raison (`mode.live_denied` : `bad_password`, `kill_switch`, `no_verified_exchange`). Un mauvais mot de passe renvoie **403 et non 401** : le front traite 401 comme une session expirée et déconnecterait l'utilisateur. Route limitée à 5 requêtes/minute. Le retour en `PAPER` est toujours immédiat et sans condition (réduire le risque ne doit jamais être bloqué).
+*Limite connue :* la condition (3) est vérifiée au passage, pas à chaque ordre. Le module d'ordres devra refuser un ordre LIVE si la configuration utilisée n'est plus éligible.
+
+### D29. `status()` est le point d'entrée « peut-on passer un ordre ? »
+`TradingControlService.status()` renvoie `canTrade` et `blockedReason` (`KILL_SWITCH` ou `PAUSED_DAILY_LOSS`, via `botPausedUntil`). **Le module d'ordres devra l'appeler avant chaque ordre** et s'arrêter si `canTrade` est faux.
+
+### D30. Pause automatique sur perte journalière : hors de cette étape
+Elle demande la valorisation du portefeuille (valeur d'ouverture du jour, valeur courante), qui n'existe pas encore. La règle (`dailyLossBreached`) et le champ (`User.botPausedUntil`) sont prêts ; le déclenchement, l'alerte critique associée et l'audit viendront avec le module de portefeuille.
+
+### D31. Délai des tests e2e porté à 20 s
+Les parcours enchaînent plusieurs hachages argon2 (volontairement lents) et les fichiers e2e tournent en parallèle : le délai par défaut de 5 s rendait un test de limitation de débit instable.
+
+---
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
@@ -113,4 +146,6 @@ Un `select` explicite (`PUBLIC_SELECT`) liste les champs exposés ; les colonnes
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
+| Pause automatique sur perte journalière | Voir D30 : dépend du module de portefeuille. |
+| Contrôle d'éligibilité LIVE à chaque ordre | Voir D28 : la vérification au passage ne suffit pas si une clé est rejetée ensuite. |
 | Tests d'intégration sur PostgreSQL | Compléter les tests sur base en mémoire (D15), notamment le trigger d'audit et les contraintes uniques. |

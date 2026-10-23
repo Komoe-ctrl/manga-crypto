@@ -10,6 +10,6 @@ import { TokenService } from './token.service.js';
   imports: [JwtModule.register({})],
   controllers: [AuthController],
   providers: [AuthService, PasswordService, TokenService, AuthGuard],
-  exports: [AuthGuard, TokenService],
+  exports: [AuthGuard, TokenService, PasswordService],
 })
 export class AuthModule {}
