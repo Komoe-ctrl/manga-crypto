@@ -10,6 +10,7 @@ import { AuthModule } from './auth/auth.module.js';
 import { CryptoModule } from './crypto/crypto.module.js';
 import { ExchangesModule } from './exchanges/exchanges.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { RiskModule } from './risk/risk.module.js';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     AuditModule,
     AuthModule,
     ExchangesModule,
+    RiskModule,
   ],
   controllers: [AppController],
   providers: [

@@ -31,12 +31,28 @@ export class FakePrisma {
         baseCurrency: 'USD',
         tradingMode: 'PAPER',
         killSwitchActive: false,
+        killSwitchAt: null,
+        botPausedUntil: null,
+        tradingModeChangedAt: null,
         deletedAt: null,
         ...Object.fromEntries(
           Object.entries(fields).filter(([, v]) => v !== undefined),
         ),
       };
       this.users.push(row);
+      // Valeurs par défaut du schéma Prisma (RiskSettings).
+      this.riskSettingsRows.push({
+        userId: row.id,
+        maxExposurePct: new Prisma.Decimal(5),
+        maxDailyLossPct: new Prisma.Decimal(3),
+        defaultStopLossPct: new Prisma.Decimal(3),
+        defaultTakeProfitPct: new Prisma.Decimal(6),
+      });
+      return pick(row, select);
+    },
+    update: async ({ where, data, select }: Row) => {
+      const row = this.users.find((u) => u.id === where.id)!;
+      Object.assign(row, data);
       return pick(row, select);
     },
     findFirst: async ({ where, select }: Row) => {
@@ -62,6 +78,22 @@ export class FakePrisma {
       const rows = this.refreshTokens.filter((t) => matches(t, where));
       rows.forEach((t) => Object.assign(t, data));
       return { count: rows.length };
+    },
+  };
+
+  riskSettingsRows: Row[] = [];
+
+  riskSettings = {
+    findUnique: async ({ where, select }: Row) => {
+      const row = this.riskSettingsRows.find((r) => r.userId === where.userId);
+      return row ? pick(row, select) : null;
+    },
+    update: async ({ where, data, select }: Row) => {
+      const row = this.riskSettingsRows.find((r) => r.userId === where.userId)!;
+      for (const [key, value] of Object.entries(data)) {
+        row[key] = new Prisma.Decimal(value as number);
+      }
+      return pick(row, select);
     },
   };
 
@@ -117,7 +149,12 @@ export class FakePrisma {
 }
 
 function matches(row: Row, where: Row): boolean {
-  return Object.entries(where).every(([key, value]) => row[key] === value);
+  return Object.entries(where).every(([key, value]) =>
+    // Seul l'opérateur `{ not: null }` est géré, avec l'égalité simple.
+    value !== null && typeof value === 'object' && 'not' in value
+      ? row[key] !== value.not
+      : row[key] === value,
+  );
 }
 
 function pick(row: Row, select?: Row): Row {

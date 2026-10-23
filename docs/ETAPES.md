@@ -41,6 +41,7 @@ npm run typecheck && npm test && npm run test:e2e && npm run lint
 - **Port 5432 déjà pris** (PostgreSQL local sous Windows) : l'authentification échoue avec `P1000`. Définir `POSTGRES_PORT=5442` et adapter `DATABASE_URL`.
 - **« La migration a été modifiée après avoir été appliquée »** : fins de ligne CRLF. Corrigé par `.gitattributes` (D16). Si la base de dev a été créée avant, la réinitialiser avec `npx prisma migrate reset` (efface les données de dev).
 - **`npx prisma` télécharge Prisma 8 RC** : `node_modules` n'est pas installé. Lancer `npm ci` d'abord (la SPEC impose Prisma 7.10).
+- **`prettier --check` signale des fichiers déjà formatés** : fins de ligne CRLF écrites par Git au `pull` sous Windows. Sans conséquence (le dépôt contient du LF) ; `npx prettier --write <fichier>` les remet en LF.
 - **Avertissement `install-scripts`** après `npm install` : sans conséquence, `argon2` fournit des binaires précompilés.
 
 ---
@@ -107,3 +108,32 @@ POST /api/exchanges
 **Ajouter une plateforme** : écrire un `XxxVerifier implements ExchangeVerifier`, l'ajouter aux `providers` de `ExchangesModule` et à la `Map` de `VerifierRegistry`, avec des tests sur les cas : droit de retrait, clé invalide, plateforme injoignable, réponse incomplète.
 
 **Pas encore fait** : lecture des clés par le module d'ordres (`ExchangesService` ne les expose pas), passage en `LIVE` (devra refuser les configurations `sandbox` ou non vérifiées, D20).
+
+## Étape 4 — Gestion des risques et contrôle du robot
+
+**Livré** : `src/risk/` (`risk-rules.ts`, `RiskSettingsService`, `TradingControlService`, contrôleur, DTO). Pas de migration : les colonnes existaient depuis l'étape 1.
+
+| Route | Effet |
+|---|---|
+| `GET /api/risk/settings` | Réglages : `maxExposurePct`, `maxDailyLossPct`, `defaultStopLossPct`, `defaultTakeProfitPct` (défaut 5 / 3 / 3 / 6) |
+| `PATCH /api/risk/settings` | Modifie les champs fournis (bornes : D26) ; audité avec ancien et nouveau chiffre |
+| `GET /api/risk/status` | `{ tradingMode, killSwitchActive, botPausedUntil, canTrade, blockedReason, … }` |
+| `POST /api/risk/kill-switch/activate` | Arrête le robot (idempotent) |
+| `POST /api/risk/kill-switch/deactivate` | Le relance |
+| `POST /api/risk/mode/live` | Passage en LIVE : `{ "password": "…", "confirmation": "PASSER EN LIVE" }` ; 403 mauvais mot de passe, 422 prérequis manquant ; 5/min |
+| `POST /api/risk/mode/paper` | Retour en simulation, toujours immédiat |
+
+**Prérequis du LIVE** : kill switch désactivé et une configuration d'échange `ACTIVE`, non testnet, vérifiée (D28).
+
+**Journal d'audit** : `risk.settings_updated`, `kill_switch.activated`, `kill_switch.deactivated`, `mode.live_enabled`, `mode.live_denied` (`reason`), `mode.paper_enabled`.
+
+**Utiliser les règles dans le module d'ordres** (à venir)
+```ts
+const status = await tradingControl.status(userId);
+if (!status.canTrade) return; // KILL_SWITCH ou PAUSED_DAILY_LOSS
+
+if (exceedsExposure(orderValue, totalCapital, settings.maxExposurePct)) reject();
+const { stopLoss, takeProfit } = stopLossTakeProfit('BUY', entryPrice, settings.defaultStopLossPct, settings.defaultTakeProfitPct);
+```
+
+**Pas encore fait** : pause automatique sur perte journalière (D30), contrôle d'éligibilité LIVE à chaque ordre (D28).
