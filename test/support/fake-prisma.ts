@@ -65,6 +65,50 @@ export class FakePrisma {
     },
   };
 
+  exchangeConfigs: Row[] = [];
+  tradeLogs: Row[] = [];
+
+  exchangeConfig = {
+    create: async ({ data, select }: Row) => {
+      const duplicate = this.exchangeConfigs.some(
+        (c) =>
+          c.userId === data.userId &&
+          c.exchange === data.exchange &&
+          c.label === data.label,
+      );
+      if (duplicate) {
+        throw new Prisma.PrismaClientKnownRequestError(
+          'Unique constraint failed',
+          { code: 'P2002', clientVersion: 'test' },
+        );
+      }
+      const row = { statusReason: null, createdAt: new Date(), ...data };
+      this.exchangeConfigs.push(row);
+      return pick(row, select);
+    },
+    findMany: async ({ where, select }: Row) =>
+      this.exchangeConfigs
+        .filter((c) => matches(c, where))
+        .map((c) => pick(c, select)),
+    findFirst: async ({ where }: Row) =>
+      this.exchangeConfigs.find((c) => matches(c, where)) ?? null,
+    update: async ({ where, data, select }: Row) => {
+      const row = this.exchangeConfigs.find((c) => c.id === where.id)!;
+      Object.assign(row, data);
+      return pick(row, select);
+    },
+    delete: async ({ where }: Row) => {
+      this.exchangeConfigs = this.exchangeConfigs.filter(
+        (c) => c.id !== where.id,
+      );
+    },
+  };
+
+  tradeLog = {
+    count: async ({ where }: Row) =>
+      this.tradeLogs.filter((t) => matches(t, where)).length,
+  };
+
   auditLog = {
     create: async ({ data }: Row) => {
       this.auditLogs.push({ id: randomUUID(), ...data });

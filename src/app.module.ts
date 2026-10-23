@@ -8,6 +8,7 @@ import { AuditModule } from './audit/audit.module.js';
 import { AuthGuard } from './auth/auth.guard.js';
 import { AuthModule } from './auth/auth.module.js';
 import { CryptoModule } from './crypto/crypto.module.js';
+import { ExchangesModule } from './exchanges/exchanges.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 
 @Module({
@@ -19,6 +20,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     CryptoModule,
     AuditModule,
     AuthModule,
+    ExchangesModule,
   ],
   controllers: [AppController],
   providers: [
