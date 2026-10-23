@@ -33,3 +33,6 @@ Prisma 7 : URL de la base dans `prisma.config.ts`, client généré dans `src/ge
 
 ## Façon de travailler
 Avancer étape par étape. Avant de coder une étape, résumer les choix d'architecture et les points à valider en 10 lignes maximum.
+- Une branche `feat/etape-N-…` par étape et une PR vers `main` ; jamais de commit direct sur `main`.
+- Documenter chaque étape : décisions dans `docs/DECISIONS.md` (le pourquoi), livraison et mode d'emploi dans `docs/ETAPES.md` (le quoi et le comment). Mettre ces fichiers à jour dans la même PR que le code.
+- `npm run typecheck`, `npm test`, `npm run test:e2e` et `npm run lint` doivent passer avant d'ouvrir la PR.
