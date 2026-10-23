@@ -198,3 +198,81 @@ Aucune route nouvelle. La pause se lève seule à minuit local ; il n'y a pas de
 5. Supprimer la base temporaire et vider la base Redis n° 9.
 
 **Pas encore fait** : alerte critique (D46), pertes dues aux ordres du robot (D43), purge des anciens instantanés.
+
+## Étape 7 — Centre de notifications (cœur)
+
+**Livré** : `src/notifications/` (`NotificationService`, `NotificationSettingsService`, `AlertsService`, canaux `TelegramSender` et `UnavailableSender`, `night-mode.ts`, contrôleurs, DTO), migration `add_notifications` (table `notifications`, enum `NotificationStatus`). `local-day.ts` déplacé dans `src/common/`. **Aucune dépendance ajoutée.**
+
+### Routes
+
+| Route | Effet |
+|---|---|
+| `GET /api/notifications/settings` | Mode Nuit, heure du rapport, canaux, conversation Telegram, adresse d'envoi |
+| `PATCH /api/notifications/settings` | Modification partielle ; `null` efface `telegramChatId` / `notificationEmail` ; 422 si plage vide ou Telegram sans conversation |
+| `GET /api/notifications` | Boîte de réception, plus récentes d'abord, avec `unreadCount`. Paramètres : `limit` (1–100, défaut 30), `before` (date ISO), `unread=true` |
+| `POST /api/notifications/test` | Message de test **immédiat** sur les canaux activés (3 par minute) |
+| `POST /api/notifications/:id/read` | Marque lue (idempotent) ; 404 si elle n'est pas à l'utilisateur |
+| `POST /api/notifications/read-all` | Marque tout lu → `{ "updated": n }` |
+| `POST /api/alerts` | Crée une alerte (règles ci-dessous) ; 422 si incohérente ou au-delà de 50 |
+| `GET /api/alerts` | Liste les alertes de l'utilisateur |
+| `PATCH /api/alerts/:id` | Seuil, fenêtre, canal, `isActive`, `isCritical` (la condition et le symbole ne changent pas) |
+| `DELETE /api/alerts/:id` | Supprime |
+
+### Mode Nuit
+
+Plage en minutes depuis minuit **local** (défaut 22:00 → 07:00 = `1320` → `420`), début inclus, fin exclue, passage de minuit géré. Pendant la plage, une notification **non critique** est enregistrée en `HELD` et **n'est pas envoyée** (elle sera reprise par le rapport du matin, étape 8) ; une notification **critique** passe toujours.
+
+### Alertes : règles par condition
+
+| Condition | `assetSymbol` | `windowMinutes` | `threshold` |
+|---|---|---|---|
+| `PRICE_CROSS_ABOVE` / `PRICE_CROSS_BELOW` | requis | **interdit** | prix en USD |
+| `PRICE_DROP_PCT` | requis | requis (5–10 080) | % ≤ 100 |
+| `PRICE_RISE_PCT` | requis | requis (5–10 080) | % ≤ 1 000 |
+| `PORTFOLIO_DROP_PCT` | **interdit** | requis (5–10 080) | % ≤ 100 |
+
+Le seuil est une **chaîne décimale** (`"3500"`, `"5"`), jamais un nombre JSON (D34). Les alertes sont enregistrées mais **pas encore évaluées** : le moteur arrive à l'étape 8.
+
+```json
+POST /api/alerts
+{ "assetSymbol": "BTC", "condition": "PRICE_DROP_PCT", "threshold": "5", "windowMinutes": 60, "channel": "PUSH", "isCritical": true }
+```
+
+### Configurer Telegram
+
+1. Créer un bot avec `@BotFather` ; mettre son jeton dans `TELEGRAM_BOT_TOKEN` (`.env`, jamais commité).
+2. Écrire un message au bot, puis lire l'identifiant de conversation (par exemple `https://api.telegram.org/bot<JETON>/getUpdates`, champ `message.chat.id`).
+3. `PATCH /api/notifications/settings` avec `{ "telegramEnabled": true, "telegramChatId": "<id>" }`.
+4. `POST /api/notifications/test` : le message doit arriver ; sinon `deliveries` donne le code de l'échec.
+
+### Lire le résultat d'une livraison
+
+`deliveries` (dans chaque notification) liste un résultat par canal activé : `{ "channel": "TELEGRAM", "status": "SENT" }` ou `{ "channel": "PUSH", "status": "FAILED", "reason": "channel_not_implemented" }`.
+
+| `reason` | Signification |
+|---|---|
+| `telegram_not_configured` | `TELEGRAM_BOT_TOKEN` absent |
+| `telegram_no_chat` | `telegramChatId` non renseigné |
+| `telegram_http_<statut>` | Telegram a refusé (401 : jeton invalide ; 400/403 : conversation inconnue ou bot bloqué) |
+| `telegram_unreachable` | Réseau ou délai dépassé |
+| `channel_not_implemented` | Push et Email n'ont pas encore d'envoyeur (D51) |
+| `sender_error` | Un envoyeur a levé une erreur inattendue |
+
+> **À savoir** : Push est activé par défaut mais sans envoyeur. Tant que Telegram n'est pas configuré, une alerte critique (ex. perte journalière) **n'apparaît que dans la boîte de réception**.
+
+### Envoyer une notification depuis le code
+
+```ts
+await notifications.notify(userId, {
+  title: 'Stop-loss exécuté',
+  body: 'BTC vendu à 58 200 $',
+  critical: true,              // passe même en Mode Nuit
+  dedupeKey: `sl:${orderId}`,  // optionnel : un même événement n'est notifié qu'une fois
+});
+```
+
+**Journal d'audit** : `notification_settings.updated` (noms des champs seulement), `alert.created`, `alert.updated` (noms des champs), `alert.deleted`.
+
+**Alerte de perte journalière** : la pause envoie désormais une notification critique `Perte journalière maximale atteinte` (clé `daily-loss:<jour local>`), sans jamais défaire la pause en cas d'échec d'envoi (D54).
+
+**Pas encore fait** : évaluation des alertes et rapport du matin (étape 8), envoyeurs Push et Email, temps réel (WebSocket), purge des anciennes notifications.

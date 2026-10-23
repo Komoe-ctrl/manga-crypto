@@ -190,12 +190,44 @@ Perte = valeur d'ouverture − (quantités d'ouverture × prix courants). Comme 
 ### D45. On ne conclut jamais sur des prix incomplets
 Source de prix injoignable, prix manquant pour une position actuelle ou d'ouverture → résultat `no_prices`, **aucun instantané partiel, aucune pause** (applique D38). Portefeuille vide → rien à surveiller.
 
-### D46. L'alerte critique est reportée au module de notifications
-Le centre de notifications (module 3 de la SPEC) n'existe pas encore. La pause écrit l'audit `risk.daily_loss_paused` (valeur d'ouverture, valeur courante, perte en %, seuil, fin de pause) et un log d'avertissement ; un `TODO` marque le point où brancher l'alerte critique, qui devra passer **même en Mode Nuit** (SPEC 3).
+### D46. L'alerte critique est reportée au module de notifications *(résolu à l'étape 7, D54)*
+Le centre de notifications (module 3 de la SPEC) n'existait pas encore. La pause écrit l'audit `risk.daily_loss_paused` (valeur d'ouverture, valeur courante, perte en %, seuil, fin de pause) et un log d'avertissement ; un `TODO` marque le point où brancher l'alerte critique, qui devra passer **même en Mode Nuit** (SPEC 3).
 
 ### D47. `RISK_MONITOR_ENABLED=false` pour les tests ; vérification sur un vrai Redis
 Les tests n'ouvrent jamais de connexion Redis : `RISK_MONITOR_ENABLED=false` est posé par la configuration Vitest et le module ne s'enregistre pas (`RiskMonitorModule.register()`). Le câblage réel a été vérifié à part, sur une **base PostgreSQL temporaire** et la base Redis n° 9 (toutes deux supprimées ensuite) : démarrage, programmation du job, création de l'instantané avec les vrais prix de Binance, pause simulée par une valeur d'ouverture gonflée, absence de doublon au passage suivant. C'est cette vérification qui a révélé le défaut de D40.
 Le délai par défaut des tests **unitaires** passe aussi à 20 s (comme l'e2e, D31) : les tests de services enchaînent des hachages argon2 pendant que les fichiers tournent en parallèle.
+
+---
+
+## Étape 7 — Centre de notifications (cœur)
+
+### D48. Le module 3 de la SPEC est livré en deux étapes
+Étape 7 : pipeline de notification, Mode Nuit, boîte de réception, configuration des alertes, alerte critique de la perte journalière. Étape 8 : **moteur d'évaluation des alertes** (prix, historique via l'API publique de Binance) et **rapport du matin de 08:00**, qui reprend les notifications mises en attente. Raison : un seul lot dépassait ce qui se relit et se vérifie sereinement.
+
+### D49. Une notification = un événement, qui sert aussi de boîte de réception
+Table `Notification` : titre, texte, `critical`, `status` (`HELD` ou `DISPATCHED`), `deliveries` (JSON : résultat par canal), `readAt`. On stocke **un événement par ligne**, pas une ligne par canal : la boîte de réception n'affiche pas le même message trois fois, et le détail de livraison reste lisible par canal. Une notification est toujours enregistrée, même si aucun canal n'est activé ou si tous échouent.
+`dedupeKey` (optionnel, unique par utilisateur, `NULL` autorisé en double) évite les doublons d'un même événement ; deux appels simultanés avec la même clé sont départagés par la contrainte unique (le perdant renvoie l'existant).
+
+### D50. Mode Nuit : calcul pur, fuseau de l'utilisateur, les critiques passent toujours
+`isInNightWindow` compare la minute locale à la plage : début inclus, fin exclue, plage pouvant passer minuit (22:00 → 07:00). Début = fin est une plage **vide** (jamais « nuit ») et l'API la refuse quand le Mode Nuit est actif. Une notification **critique** passe toujours (SPEC 3) ; `immediate` (message de test) contourne le Mode Nuit **sans** être marquée critique. Pendant la nuit, une notification non critique est `HELD` : enregistrée, non envoyée, destinée au rapport du matin (étape 8). Les heures sont des minutes depuis minuit local (D1) ; `local-day.ts` passe dans `src/common/` pour être partagé avec la surveillance de la perte journalière.
+
+### D51. Canaux : Telegram réel ; Push et Email non disponibles sans dépendance
+Un `ChannelSender` par canal. **Telegram** (API Bot, `fetch`, aucune dépendance) est réel : le jeton `TELEGRAM_BOT_TOKEN` est dans l'URL, donc il n'est jamais journalisé ni renvoyé, et toute erreur réseau (dont le message peut contenir l'URL) est réduite à un code (`telegram_unreachable`, `telegram_http_<statut>`, `telegram_not_configured`, `telegram_no_chat`). **Push** (Web Push) et **Email** (SMTP) exigeraient `web-push` et `nodemailer`, hors de la stack de la SPEC : l'envoi est marqué `FAILED: channel_not_implemented`, visible dans `deliveries`, plutôt qu'ignoré en silence. Un envoyeur ne lève jamais ; s'il le fait, seul le nom de l'erreur est gardé (`sender_error`).
+**Conséquence à connaître :** Push est activé par défaut mais sans envoyeur, donc tant que Telegram n'est pas configuré (ou Push/Email implémentés), **une alerte critique n'atteint l'utilisateur que dans la boîte de réception** ; le service journalise un avertissement quand une notification critique n'est livrée sur aucun canal.
+*À proposer à l'utilisateur :* `web-push` (VAPID) et `nodemailer`, ou un fournisseur d'email par HTTP.
+
+### D52. Réglages : validation stricte, audit sans valeurs
+`PATCH /api/notifications/settings` est partiel ; `null` efface `telegramChatId` et `notificationEmail`. Refus 422 : plage de Mode Nuit vide ; Telegram activé sans conversation (et retrait de la conversation pendant qu'il est actif). L'audit `notification_settings.updated` ne garde que le **nom des champs** modifiés, jamais leur valeur (identifiant Telegram, adresse). `pushSubscription` n'est pas exposé : il viendra avec l'envoyeur Push. Le message de test (`POST /api/notifications/test`, 3 par minute) vérifie la configuration de bout en bout.
+
+### D53. Alertes : CRUD cohérent avec la maquette, évaluation reportée
+Règles par condition : franchissement de prix → symbole requis, **pas de fenêtre** ; variation en % → symbole et fenêtre (5 à 10 080 minutes) requis ; portefeuille → **pas de symbole**, fenêtre requise ; baisse ≤ 100 %, hausse ≤ 1 000 %. Seuils en chaînes décimales (D34). 50 alertes au plus par utilisateur (borne le travail du moteur). La condition et le symbole ne se modifient pas (on crée une autre alerte) ; le reste se modifie, cohérence revérifiée à chaque modification. Les alertes sont enregistrées mais **pas encore évaluées** (étape 8).
+
+### D54. L'alerte de perte journalière est branchée, et ne peut pas défaire la pause
+La pause envoie une notification **critique** « Perte journalière maximale atteinte » (perte, seuil, fin de pause) avec la clé `daily-loss:<jour local>`. Elle est envoyée **après** l'enregistrement de la pause et de l'audit : si l'envoi échoue, l'erreur est journalisée (nom seulement) et la pause reste en place. Solde D46.
+
+### D55. Vérification sur le vrai PostgreSQL et le vrai Redis
+Comme à l'étape 6 (D47), l'application a été lancée sur une base temporaire et la base Redis n° 9 : réglages, quatre alertes de la maquette, message de test, puis perte simulée → notification critique unique dans la boîte de réception, lecture groupée. Les tests sur base en mémoire ne voient pas le SQL réel (types JSON, contrainte unique avec `NULL`, comptages).
+*Limite de la pagination :* `before` compare les dates de création (précision à la milliseconde) ; deux notifications créées dans la même milliseconde pourraient être sautées à la frontière d'une page. Négligeable ici, à revoir si le volume augmente.
 
 ---
 
@@ -209,7 +241,10 @@ Le délai par défaut des tests **unitaires** passe aussi à 20 s (comme l'e2e, 
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
-| Alerte critique à la pause | Voir D46 : brancher le centre de notifications (module 3), même en Mode Nuit. |
+| **Étape 8** : moteur d'évaluation des alertes + rapport du matin 08:00 | Voir D48 : évaluer les `AlertConfig` sur les prix (état « déjà déclenchée » pour ne notifier qu'au franchissement), générer le digest depuis les notifications `HELD`. |
+| Envoyeurs Push (Web Push) et Email (SMTP) | Voir D51 : demandent `web-push` et `nodemailer`, à valider. Sans eux, les alertes critiques ne sortent pas de la boîte de réception. |
+| Passerelle WebSocket vers le front | La boîte de réception se lit aujourd'hui par `GET /api/notifications` ; le temps réel (socket.io) viendra avec le front. |
+| Purge des anciennes notifications | La table grossit sans limite. |
 | Pertes dues aux ordres du robot dans la perte journalière | Voir D43 : nécessite la lecture des soldes sur la plateforme (module d'ordres). |
 | Tests d'intégration automatisés avec Redis et PostgreSQL | Voir D47 : la vérification sur un vrai Redis est aujourd'hui manuelle ; elle a trouvé un défaut que les tests unitaires ne pouvaient pas voir. |
 | Purge des instantanés d'équité anciens | La table grossit d'une ligne par utilisateur et par jour. |

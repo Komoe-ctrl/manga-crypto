@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service.js';
+import { NotificationService } from '../../notifications/notification.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { PortfolioService } from '../../portfolio/portfolio.service.js';
 import {
@@ -7,14 +8,14 @@ import {
   PriceUnavailableError,
 } from '../../portfolio/price/price-provider.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
-import { dailyLossBreached } from '../risk-rules.js';
+import { dailyLossBreached, type DecimalInput } from '../risk-rules.js';
 import {
   lossPct,
   openHoldingsValueNow,
   toSnapshot,
   type OpenHolding,
 } from './daily-loss.js';
-import { localDateOf, nextLocalMidnight } from './local-day.js';
+import { localDateOf, nextLocalMidnight } from '../../common/local-day.js';
 
 export type DailyLossOutcome =
   | 'skipped' // utilisateur introuvable ou désactivé
@@ -39,6 +40,7 @@ export class DailyLossMonitor {
     private readonly portfolio: PortfolioService,
     private readonly prices: PriceProvider,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationService,
   ) {}
 
   async checkUser(
@@ -115,11 +117,50 @@ export class DailyLossMonitor {
         pausedUntil: pausedUntil.toISOString(),
       },
     });
-    // TODO notifications (module 3) : alerte critique, qui doit passer même en Mode Nuit.
     this.logger.warn(
       `Perte journalière max atteinte (userId=${userId}) : robot en pause jusqu'au ${pausedUntil.toISOString()}`,
     );
+    await this.alert(
+      userId,
+      localDate,
+      lossPct(openEquity, current),
+      settings.maxDailyLossPct,
+      now,
+    );
     return 'paused';
+  }
+
+  /**
+   * Alerte critique (passe même en Mode Nuit). Un échec d'envoi ne doit jamais défaire la pause, qui est déjà
+   * enregistrée : on journalise le nom de l'erreur et on continue. Une clé de déduplication par jour local évite
+   * un second message si le passage est rejoué.
+   */
+  private async alert(
+    userId: string,
+    localDate: string,
+    loss: Prisma.Decimal,
+    maxLossPct: DecimalInput,
+    now: Date,
+  ): Promise<void> {
+    try {
+      await this.notifications.notify(
+        userId,
+        {
+          title: 'Perte journalière maximale atteinte',
+          body:
+            `Votre portefeuille a perdu ${loss.toFixed()} % depuis l'ouverture de la journée ` +
+            `(seuil : ${new Prisma.Decimal(maxLossPct).toFixed()} %). ` +
+            "Le robot est en pause jusqu'à minuit, heure locale.",
+          critical: true,
+          dedupeKey: `daily-loss:${localDate}`,
+        },
+        now,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Alerte de perte journalière non envoyée (userId=${userId}) : ${error instanceof Error ? error.name : 'erreur inconnue'}`,
+      );
+    }
   }
 
   /** Renvoie `null` si la source de prix est injoignable : l'appelant ne conclut pas. */

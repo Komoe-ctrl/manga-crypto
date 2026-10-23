@@ -31,6 +31,12 @@ const parts = (instant: Date, timeZone: string) =>
       .map((p) => [p.type, Number(p.value)]),
   ) as Record<'year' | 'month' | 'day' | 'hour' | 'minute' | 'second', number>;
 
+/** Minutes écoulées depuis minuit local (0 à 1439) à cet instant, dans le fuseau donné. */
+export function localMinuteOf(instant: Date, timeZone: string): number {
+  const { hour, minute } = parts(instant, timeZone);
+  return hour * 60 + minute;
+}
+
 /** Date locale « YYYY-MM-DD » de l'instant dans le fuseau donné. */
 export function localDateOf(instant: Date, timeZone: string): string {
   const { year, month, day } = parts(instant, timeZone);

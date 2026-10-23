@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { type DynamicModule, Module } from '@nestjs/common';
+import { NotificationsModule } from '../../notifications/notifications.module.js';
 import { PortfolioModule } from '../../portfolio/portfolio.module.js';
 import { DailyLossMonitor } from './daily-loss.monitor.js';
 import { RedisConnection, RedisConnectionModule } from './redis-connection.js';
@@ -37,6 +38,7 @@ export class RiskMonitorModule {
           },
         }),
         PortfolioModule,
+        NotificationsModule,
       ],
       providers: [DailyLossMonitor, RiskMonitorProcessor, RiskMonitorScheduler],
     };
