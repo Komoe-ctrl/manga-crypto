@@ -84,6 +84,8 @@ enum NotificationStatus {
   HELD
   /// Envoyée (ou tentée) sur les canaux activés.
   DISPATCHED
+  /// Mise en attente par le Mode Nuit, puis reprise dans un rapport du matin (voir Notification.digestId).
+  DIGESTED
 }
 
 enum DigestPeriod {
@@ -151,6 +153,9 @@ model Notification {
   dedupeKey  String?            @db.VarChar(120)
   /// Null = non lue.
   readAt     DateTime?
+  /// Rapport du matin qui a repris cette notification (statut DIGESTED) ; null sinon.
+  digestId   String?
+  digest     DigestReport?      @relation(fields: [digestId], references: [id], onDelete: SetNull)
   createdAt  DateTime           @default(now())
 
   @@unique([userId, dedupeKey])
@@ -388,16 +393,18 @@ model DigestReport {
   periodStart       DateTime
   periodEnd         DateTime
   /// Synthèse textuelle (« Nuit calme… »).
-  summary           String       @db.Text
+  summary           String         @db.Text
   /// Points clés affichés sous la synthèse.
   points            String[]
   /// Variation du portefeuille sur la période, en %.
-  portfolioDeltaPct Decimal?     @db.Decimal(7, 2)
+  portfolioDeltaPct Decimal?       @db.Decimal(7, 2)
   /// Alertes non critiques mises en attente pendant le Mode Nuit et incluses dans ce rapport.
-  queuedAlertsCount Int          @default(0)
+  queuedAlertsCount Int            @default(0)
   /// Null = non lu.
   readAt            DateTime?
-  generatedAt       DateTime     @default(now())
+  generatedAt       DateTime       @default(now())
+  /// Notifications mises en attente par le Mode Nuit et reprises dans ce rapport.
+  notifications     Notification[]
 
   /// Rend la génération idempotente : un seul rapport par utilisateur, période et début.
   @@unique([userId, period, periodStart])

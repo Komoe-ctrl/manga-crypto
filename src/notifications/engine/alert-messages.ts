@@ -1,16 +1,7 @@
+import { formatNumber as fmt } from '../../common/format.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { AlertCondition } from '../../generated/prisma/enums.js';
 import { changePct } from './alert-conditions.js';
-
-const number = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
-/** Espaces insécables du formatage français remplacés par une espace simple (messages Telegram, journaux, tests). */
-/** En dessous de 1, des chiffres significatifs plutôt que des décimales : 0,0001 % ne doit pas s'afficher « 0 % ». */
-const small = new Intl.NumberFormat('fr-FR', { maximumSignificantDigits: 4 });
-const fmt = (value: Prisma.Decimal) => {
-  const n = value.toNumber();
-  const formatter = n !== 0 && Math.abs(n) < 1 ? small : number;
-  return formatter.format(n).replace(/[  ]/g, ' ');
-};
 
 /** « 1 h », « 24 h », « 7 jours », « 45 min ». */
 export function windowLabel(minutes: number): string {

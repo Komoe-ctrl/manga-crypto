@@ -64,9 +64,31 @@ function offsetMs(instant: Date, timeZone: string): number {
  */
 export function nextLocalMidnight(now: Date, timeZone: string): Date {
   const [year, month, day] = localDateOf(now, timeZone).split('-').map(Number);
-  // Minuit du lendemain « comme si » le fuseau était UTC, corrigé du décalage réel ; deux passes
-  // car le décalage peut changer entre l'estimation et l'instant trouvé (changement d'heure).
-  const wallClock = Date.UTC(year, month - 1, day + 1);
+  return localMidnight(year, month, day + 1, timeZone);
+}
+
+/** Premier instant (minuit local) du jour local de l'instant donné. Un jour peut durer 23 h ou 25 h. */
+export function startOfLocalDay(now: Date, timeZone: string): Date {
+  const [year, month, day] = localDateOf(now, timeZone).split('-').map(Number);
+  return localMidnight(year, month, day, timeZone);
+}
+
+/** Jour de la semaine local de l'instant : 0 = dimanche, 1 = lundi … 6 = samedi. */
+export function localWeekday(now: Date, timeZone: string): number {
+  const [year, month, day] = localDateOf(now, timeZone).split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+/** Minuit local de la date civile donnée (le jour peut déborder : `day + 1` du dernier jour du mois est valide). */
+function localMidnight(
+  year: number,
+  month: number,
+  day: number,
+  timeZone: string,
+): Date {
+  // Minuit « comme si » le fuseau était UTC, corrigé du décalage réel ; deux passes car le décalage peut
+  // changer entre l'estimation et l'instant trouvé (changement d'heure).
+  const wallClock = Date.UTC(year, month - 1, day);
   const first = wallClock - offsetMs(new Date(wallClock), timeZone);
   return new Date(wallClock - offsetMs(new Date(first), timeZone));
 }

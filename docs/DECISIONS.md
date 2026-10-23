@@ -269,6 +269,43 @@ Comme aux étapes 6 et 7 : base temporaire et Redis n° 9, cours et historique r
 
 ---
 
+## Étape 9 — Rapport du matin
+
+Solde D48 et D56 : le module 3 de la SPEC est complet (notifications, Mode Nuit, alertes configurables et évaluées, rapport du matin).
+
+### D65. Un rapport par jour local et par utilisateur, généré à l'heure choisie
+Un job BullMQ toutes les 5 minutes (`DigestEngineModule`) parcourt les utilisateurs ; pour chacun, si le rapport est activé et si l'heure locale a atteint `digestMinute` (08:00 par défaut) sans qu'un rapport existe pour ce jour local, il le génère. La contrainte unique `(userId, period, periodStart)` rend la génération idempotente ; `periodStart` est le **début du jour local** (`startOfLocalDay`, qui gère les jours de 23 h et 25 h). Deux passages simultanés ne créent qu'un rapport et n'envoient qu'un message (le perdant reçoit l'erreur d'unicité et s'arrête).
+
+### D66. Fenêtre de rattrapage de 6 heures
+Si l'application était arrêtée à l'heure du rapport, elle rattrape jusqu'à 6 h plus tard ; au-delà, **la journée est abandonnée** : un rapport « du matin » délivré le soir serait trompeur. (Limite : la fenêtre ne passe pas minuit ; un rapport réglé à 23:00 n'a que 60 minutes.)
+
+### D67. Deux périodes générées : `TODAY` chaque jour, `WEEK` le lundi
+`TODAY` couvre 24 h, `WEEK` 7 jours (généré en plus le lundi local). « Hier » de la maquette n'a pas de valeur propre : c'est le rapport `TODAY` de la veille, donc **`DigestPeriod.YESTERDAY` reste inutilisé** (laissé dans l'enum pour ne pas migrer). `WEEK` ne reprend pas les notifications en attente (déjà prises par le rapport du jour : pas de double compte). Si le rapport du jour existe mais pas celui de la semaine un lundi, le suivant le complète.
+
+### D68. Texte déterministe et sobre : il constate, il ne conseille pas
+Pas d'IA ni de conseil d'investissement : `buildDigest` assemble des phrases à partir de faits (variation du portefeuille, alertes critiques, alertes regroupées), dans le ton de la maquette. « Nuit calme » seulement s'il n'y a aucune alerte critique et une variation de moins de 3 % ; « stable » sous 0,1 % ; « Aucune action requise » seulement sans alerte critique, sinon « Consultez vos alertes critiques ». Les listes sont bornées (5 alertes regroupées, 3 critiques) avec un compteur du reste. Fonction pure, testée sur tous ces seuils.
+
+### D69. Variation du portefeuille : mouvement de marché des positions actuelles
+Valeur des **positions actuelles** aux prix du début de période (`getPriceAt`, D59) comparée à leur valeur aux prix courants : comme D43 et D61, un achat, une vente ou un retrait déclaré n'y compte pas. La plus forte hausse et la plus forte baisse par position sont listées (seulement si elles ont le bon signe), arrondies à 2 décimales comme la synthèse sauf si l'arrondi effacerait un mouvement non nul. Une position sans prix, courant ou passé, rend la **valeur non calculable** : le rapport le dit (« La valeur du portefeuille n'a pas pu être calculée ») plutôt que d'inventer un total partiel (D38, D45, D60).
+
+### D70. Prix indisponibles : on réessaie une heure, puis on génère sans chiffres
+Source de prix injoignable : le rapport n'est **pas** enregistré pendant la première heure (nouvel essai au tour suivant) ; passé ce délai, il est généré sans les chiffres du portefeuille plutôt que pas du tout. Un rapport enregistré est définitif (contrainte unique) : d'où l'attente avant de se contenter d'un rapport partiel.
+
+### D71. Les notifications en attente sont reprises et tracées
+`NotificationStatus.DIGESTED` et `Notification.digestId` (migration `add_digest_link`) : les notifications `HELD` de la nuit sont marquées reprises et pointent vers leur rapport. **Seules celles lues au début du passage** sont marquées (par identifiants) : une notification arrivée pendant la génération reste `HELD` pour le rapport suivant au lieu d'être marquée sans avoir été incluse. En cas de plantage entre l'enregistrement du rapport et le marquage, elles seront reprises le lendemain (au moins une fois, jamais perdues).
+
+### D72. Le rapport est aussi envoyé, en notification immédiate
+Le rapport est annoncé par une notification « Rapport du matin » (ou « de la semaine ») sur les canaux activés : `immediate` (hors Mode Nuit : c'est le but), non critique, avec la clé `digest:<période>:<jour local>`. Le rapport est enregistré **avant** l'envoi ; un échec d'envoi est journalisé (nom de l'erreur seulement) et ne le défait pas. Les mêmes limites de canaux qu'en D51 s'appliquent (Push et Email non disponibles).
+
+### D73. API de consultation, sans génération à la demande
+`GET /api/digests` (filtre `period`, pagination par date de génération, `unreadCount`), `GET /api/digests/:id`, `POST /api/digests/:id/read` (idempotent), isolés par utilisateur. Pas de route pour générer un rapport : la génération n'a lieu que via le job, ce qui évite de contourner l'idempotence et de multiplier les appels de prix.
+
+### D74. Vérification sur le vrai PostgreSQL, Redis et Binance
+Comme aux étapes 6 à 8 : base temporaire, Redis n° 9, historique réel de Binance. Constaté : une alerte non critique pendant la plage de nuit est mise en attente ; le rapport la reprend (`HELD` → `DIGESTED`, `digestId` renseigné), contient la vraie variation sur 24 h, est annoncé en notification immédiate, n'est pas dupliqué au passage suivant, et se marque lu. Cette vérification a révélé un détail d'affichage (mouvement affiché « −0,1199 % » contre « 0,12 % » dans la synthèse), corrigé.
+*Non couvert par la vérification manuelle :* le rapport hebdomadaire (la vérification n'était pas un lundi) ; il est couvert par les tests unitaires, y compris sur le calcul du jour de la semaine local.
+
+---
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
@@ -279,7 +316,9 @@ Comme aux étapes 6 et 7 : base temporaire et Redis n° 9, cours et historique r
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
-| **Étape 9** : rapport du matin 08:00 | Voir D48 et D56 : générer le digest depuis les notifications `HELD` de la nuit (les marquer comme reprises), à l'heure `digestMinute` de chaque utilisateur, dans son fuseau. |
+| Rapport du matin : stablecoins et soldes | La maquette mentionne « 4 200 USDC disponibles » ; sans lecture des soldes sur la plateforme (module d'ordres), le rapport ne couvre que les positions déclarées. |
+| Rapport du matin : « Hier » | Voir D67 : le front lit le rapport `TODAY` précédent ; l'enum `YESTERDAY` est inutilisé. À retirer lors d'une prochaine migration du schéma. |
+| Purge des anciens rapports | La table `digest_reports` grossit d'une ligne par jour et par utilisateur (plus une par semaine). |
 | Alertes : valeur de la dernière évaluation | L'API n'expose pas le prix observé ni l'écart au seuil (« ETH à ~2,5 % de votre seuil », maquette) ; à ajouter si le front en a besoin. |
 | Cache Redis des prix et de l'historique | Voir D36 : les prix passés sont aujourd'hui en mémoire (perdus au redémarrage, non partagés entre instances). |
 | Envoyeurs Push (Web Push) et Email (SMTP) | Voir D51 : demandent `web-push` et `nodemailer`, à valider. Sans eux, les alertes critiques ne sortent pas de la boîte de réception. |

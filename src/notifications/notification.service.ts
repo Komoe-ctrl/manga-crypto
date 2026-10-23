@@ -36,6 +36,8 @@ export interface NotificationView {
   status: NotificationStatus;
   deliveries: DeliveryResult[];
   readAt: Date | null;
+  /** Rapport du matin qui a repris cette notification (statut DIGESTED), sinon null. */
+  digestId: string | null;
   createdAt: Date;
 }
 
@@ -47,6 +49,7 @@ const SELECT = {
   status: true,
   deliveries: true,
   readAt: true,
+  digestId: true,
   createdAt: true,
 } as const;
 

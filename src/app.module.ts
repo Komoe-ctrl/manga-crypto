@@ -8,6 +8,8 @@ import { AuditModule } from './audit/audit.module.js';
 import { AuthGuard } from './auth/auth.guard.js';
 import { AuthModule } from './auth/auth.module.js';
 import { CryptoModule } from './crypto/crypto.module.js';
+import { DigestEngineModule } from './digests/digest-engine.module.js';
+import { DigestsModule } from './digests/digests.module.js';
 import { ExchangesModule } from './exchanges/exchanges.module.js';
 import { AlertsEngineModule } from './notifications/engine/alerts-engine.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
@@ -34,6 +36,8 @@ import { RiskModule } from './risk/risk.module.js';
     QueueModule.register(),
     RiskMonitorModule.register(),
     AlertsEngineModule.register(),
+    DigestsModule,
+    DigestEngineModule.register(),
   ],
   controllers: [AppController],
   providers: [
