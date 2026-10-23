@@ -115,11 +115,19 @@ export class NotificationDto {
   @ApiProperty() critical: boolean;
   @ApiProperty({
     enum: Object.values(NotificationStatus),
-    description: 'HELD : mise en attente par le Mode Nuit',
+    description:
+      'HELD : mise en attente par le Mode Nuit ; DIGESTED : reprise dans un rapport du matin (voir digestId)',
   })
   status: NotificationStatus;
   @ApiProperty({ type: [DeliveryDto] }) deliveries: DeliveryDto[];
   @ApiProperty({ nullable: true, type: Date }) readAt: Date | null;
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    description:
+      'Rapport du matin qui a repris cette notification (statut DIGESTED)',
+  })
+  digestId: string | null;
   @ApiProperty() createdAt: Date;
 }
 

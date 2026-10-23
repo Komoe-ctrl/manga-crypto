@@ -189,6 +189,55 @@ export class FakePrisma {
     },
   };
 
+  digestReports: Row[] = [];
+
+  digestReport = {
+    create: async ({ data, select }: Row) => {
+      if (
+        this.digestReports.some(
+          (d) =>
+            d.userId === data.userId &&
+            d.period === data.period &&
+            d.periodStart.getTime() === data.periodStart.getTime(),
+        )
+      ) {
+        throw new Prisma.PrismaClientKnownRequestError(
+          'Unique constraint failed',
+          { code: 'P2002', clientVersion: 'test' },
+        );
+      }
+      const row = {
+        id: randomUUID(),
+        readAt: null,
+        generatedAt: this.tick(),
+        ...data,
+        portfolioDeltaPct:
+          data.portfolioDeltaPct == null
+            ? null
+            : new Prisma.Decimal(data.portfolioDeltaPct),
+      };
+      this.digestReports.push(row);
+      return pick({ ...row }, select);
+    },
+    findFirst: async ({ where, select }: Row) => {
+      const row = this.digestReports.find((d) => matches(d, where));
+      return row ? pick({ ...row }, select) : null;
+    },
+    findMany: async ({ where, take, select }: Row) =>
+      this.digestReports
+        .filter((d) => matches(d, where))
+        .sort((a, b) => b.generatedAt - a.generatedAt)
+        .slice(0, take)
+        .map((d) => pick({ ...d }, select)),
+    count: async ({ where }: Row) =>
+      this.digestReports.filter((d) => matches(d, where)).length,
+    updateMany: async ({ where, data }: Row) => {
+      const rows = this.digestReports.filter((d) => matches(d, where));
+      rows.forEach((d) => Object.assign(d, data));
+      return { count: rows.length };
+    },
+  };
+
   alertConfigs: Row[] = [];
 
   alertConfig = {
@@ -372,7 +421,11 @@ function matches(row: Row, where: Row): boolean {
         ? row[key] !== value.not
         : value !== null && typeof value === 'object' && 'lt' in value
           ? row[key] < value.lt
-          : row[key] === value,
+          : value !== null && typeof value === 'object' && 'gte' in value
+            ? row[key] >= value.gte
+            : value !== null && typeof value === 'object' && 'in' in value
+              ? value.in.includes(row[key])
+              : row[key] === value,
   );
 }
 

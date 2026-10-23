@@ -310,3 +310,56 @@ Aucune route nouvelle. `GET /api/alerts` expose désormais `isTriggered` (`false
 **Vérifier sur un vrai Redis** : même procédure que pour l'étape 6 (base temporaire, Redis n° 9, `npx prisma migrate deploy`), puis créer une alerte `PRICE_CROSS_ABOVE` avec un seuil de `1` (toujours dépassé) et ajouter un job `evaluate` à la file `alerts-engine` : une notification apparaît dans `GET /api/notifications` et l'alerte passe `isTriggered: true`. Un second passage ne notifie pas.
 
 **Pas encore fait** : rapport du matin (étape 9), envoyeurs Push et Email (sans eux, `channel: "PUSH"` ou `"EMAIL"` donne `channel_not_implemented`), prix observé et écart au seuil exposés par l'API, cache Redis des prix.
+## Étape 9 — Rapport du matin
+
+**Livré** : `src/digests/` (`DigestGenerator`, `digest-content.ts`, `DigestsService` et contrôleur, `DigestEngineModule` avec son processeur et son planificateur), migration `add_digest_link` (`notifications.digestId`, valeur d'enum `DIGESTED`), `startOfLocalDay` et `localWeekday` dans `src/common/local-day.ts`, formatage des nombres partagé dans `src/common/format.ts`. **Aucune dépendance ajoutée.**
+
+**Fonctionnement** : toutes les 5 minutes, pour chaque utilisateur actif dont le rapport est activé :
+1. l'heure locale a atteint `digestMinute` (défaut 08:00 = `480`) depuis moins de 6 h, et aucun rapport n'existe pour ce jour local ;
+2. rassemble : valeur des positions actuelles aux prix d'il y a 24 h et aux prix courants, alertes critiques des dernières 24 h, notifications mises en attente par le Mode Nuit ;
+3. enregistre le rapport (`TODAY`, plus `WEEK` le lundi), marque les notifications en attente `DIGESTED` avec le `digestId`, puis annonce le rapport par une notification immédiate sur les canaux activés.
+
+### Routes
+
+| Route | Effet |
+|---|---|
+| `GET /api/digests` | Rapports, plus récents d'abord, avec `unreadCount`. Paramètres : `limit` (1–100, défaut 30), `before` (date ISO), `period` (`TODAY` ou `WEEK`) |
+| `GET /api/digests/:id` | Un rapport ; 404 s'il n'est pas à l'utilisateur |
+| `POST /api/digests/:id/read` | Marque lu (idempotent) |
+
+```json
+GET /api/digests?period=TODAY&limit=2
+→ { "unreadCount": 1, "items": [{
+     "id": "…", "period": "TODAY", "periodStart": "2026-10-23T00:00:00.000Z", "periodEnd": "2026-10-23T08:05:00.000Z",
+     "summary": "Nuit calme. Votre portefeuille a progressé d'environ 1,2 % sur 24 h. Aucune alerte critique ne s'est déclenchée. Une alerte non urgente a été regroupée dans ce rapport. Aucune action requise.",
+     "points": ["Valeur du portefeuille : 41 000 $", "Plus forte hausse : SOL +4,2 %", "Regroupée : ETH franchit 3 500 $ à la hausse"],
+     "portfolioDeltaPct": "1.2", "queuedAlertsCount": 1, "readAt": null, "generatedAt": "…" }] }
+```
+
+**Mapper la maquette** : « Ce matin » = le premier rapport `TODAY` ; « Hier » = le suivant (`TODAY` de la veille, il n'y a pas de période `YESTERDAY`) ; « 7 jours » = le premier rapport `WEEK`.
+
+### Cas particuliers
+
+| Cas | Comportement |
+|---|---|
+| Avant l'heure du rapport, ou plus de 6 h après | Aucun rapport (la journée est abandonnée au-delà) |
+| Rapport déjà généré pour ce jour local | Rien (idempotent) |
+| Prix indisponibles, première heure | Attente du tour suivant, rien d'enregistré |
+| Prix indisponibles, après une heure | Rapport généré sans les chiffres du portefeuille |
+| Position sans prix (courant ou passé) | « La valeur du portefeuille n'a pas pu être calculée » |
+| Pas de position | Rapport sans partie portefeuille |
+| Lundi local | `WEEK` (7 jours) en plus de `TODAY` ; sans reprise des notifications en attente |
+| Échec d'envoi de l'annonce | Le rapport reste enregistré |
+| `digestEnabled = false` | Aucun rapport |
+
+**Réglages concernés** (`PATCH /api/notifications/settings`) : `digestEnabled`, `digestMinute` (minutes depuis minuit local), `nightModeEnabled`, `nightStartMinute`, `nightEndMinute`.
+
+**Notifications** : une notification reprise a le statut `DIGESTED` et un `digestId` (visibles dans `GET /api/notifications`) ; l'annonce du rapport est une notification `DISPATCHED` « Rapport du matin » / « Rapport de la semaine ».
+
+**Jobs de fond** : `BACKGROUND_JOBS_ENABLED=false` désactive aussi la génération des rapports.
+
+**Résultat d'un passage** : `{ checked, generated, failed }` (visible dans les jobs terminés de la file `digest`).
+
+**Vérifier sur un vrai Redis** : même procédure que pour l'étape 6 (base temporaire, Redis n° 9, `npx prisma migrate deploy`). Régler `digestMinute` quelques minutes avant l'heure UTC actuelle (utilisateur en `UTC`), éventuellement une plage de Mode Nuit couvrant l'heure actuelle et une alerte non critique pour avoir une notification en attente, puis ajouter un job `check` à la file `digest` : un rapport apparaît dans `GET /api/digests` et les notifications en attente passent `DIGESTED`. Un second passage ne crée rien.
+
+**Pas encore fait** : soldes et stablecoins du rapport (nécessitent le module d'ordres), purge des anciens rapports, envoyeurs Push et Email (sans eux, l'annonce n'arrive que sur Telegram et dans la boîte de réception).
