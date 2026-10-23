@@ -1,6 +1,13 @@
-// Schéma Prisma — crypto-api
-// Les modèles sont à générer à l'étape 1 (voir docs/SPEC.md, section 7).
-// Rappel : montants et quantités en Decimal, jamais en Float.
+// Schéma Prisma — crypto-api (voir docs/SPEC.md)
+//
+// Conventions :
+//  - Montants, quantités, prix, frais : Decimal, jamais Float.
+//  - Pourcentages : Decimal(5,2) exprimé en « points » (5.00 = 5 %).
+//  - Dates en UTC ; le fuseau de l'utilisateur est dans User.timezone.
+//  - Les horaires « de la journée » (Mode Nuit, digest) sont des minutes depuis minuit,
+//    dans le fuseau de l'utilisateur (ex. 22:00 = 1320).
+//  - TradeLog et AuditLog ne sont jamais supprimés en cascade : un User est désactivé
+//    (deletedAt), pas effacé. onDelete: Restrict le garantit.
 
 generator client {
   provider = "prisma-client"
@@ -9,4 +16,340 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+/// PAPER = simulation (défaut). LIVE = ordres réels, activation explicite et auditée.
+enum TradingMode {
+  PAPER
+  LIVE
+}
+
+enum Exchange {
+  BINANCE
+  KRAKEN
+}
+
+enum ExchangeStatus {
+  /// Clé enregistrée, permissions pas encore vérifiées.
+  PENDING
+  ACTIVE
+  /// Refusée : droit « Withdrawal » détecté, plateforme sans vérificateur, clé invalide…
+  REJECTED
+  DISABLED
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+}
+
+enum OrderStatus {
+  PENDING
+  SUBMITTED
+  PARTIALLY_FILLED
+  FILLED
+  CANCELLED
+  REJECTED
+  FAILED
+}
+
+enum AlertCondition {
+  /// Baisse de X % sur la fenêtre (ex. BTC −5 % en 1 h).
+  PRICE_DROP_PCT
+  /// Hausse de X % sur la fenêtre (ex. SOL +8 % sur 24 h).
+  PRICE_RISE_PCT
+  /// Franchit un prix à la hausse (ex. ETH franchit 3 500 $).
+  PRICE_CROSS_ABOVE
+  /// Passe sous un prix.
+  PRICE_CROSS_BELOW
+  /// Valeur du portefeuille −X % sur la fenêtre (ex. −10 % sur 7 jours).
+  PORTFOLIO_DROP_PCT
+}
+
+enum NotificationChannel {
+  PUSH
+  TELEGRAM
+  EMAIL
+}
+
+enum DigestPeriod {
+  TODAY
+  YESTERDAY
+  WEEK
+}
+
+// ───────────────────────────── Modèles ─────────────────────────────
+
+model User {
+  id           String  @id @default(uuid())
+  email        String  @unique
+  /// Hash du mot de passe (algorithme choisi à l'étape d'authentification).
+  passwordHash String
+  displayName  String?
+  /// Fuseau IANA : sert au Mode Nuit et à l'heure du digest.
+  timezone     String  @default("Europe/Paris")
+  /// Devise de référence pour les valorisations (portefeuille, P&L).
+  baseCurrency String  @default("USD")
+
+  tradingMode          TradingMode @default(PAPER)
+  tradingModeChangedAt DateTime?
+
+  /// Kill switch : tant qu'il est actif, aucun ordre n'est passé.
+  killSwitchActive Boolean   @default(false)
+  killSwitchAt     DateTime?
+  /// Pause automatique (perte journalière max atteinte) ; null = pas en pause.
+  botPausedUntil   DateTime?
+
+  /// Soft delete : conserve TradeLog et AuditLog.
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  notificationSettings NotificationSettings?
+  riskSettings         RiskSettings?
+  exchangeConfigs      ExchangeConfig[]
+  assets               Asset[]
+  tradeLogs            TradeLog[]
+  alertConfigs         AlertConfig[]
+  digestReports        DigestReport[]
+  auditLogs            AuditLog[]
+
+  @@map("users")
+}
+
+model NotificationSettings {
+  id     String @id @default(uuid())
+  /// 1-1 avec User ; supprimé avec lui.
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  nightModeEnabled Boolean @default(true)
+  /// Minutes depuis minuit (fuseau de l'utilisateur). Défaut 22:00 → 07:00 ; la plage peut traverser minuit.
+  nightStartMinute Int     @default(1320)
+  nightEndMinute   Int     @default(420)
+
+  digestEnabled Boolean @default(true)
+  /// Heure du rapport du matin, en minutes depuis minuit. Défaut 08:00.
+  digestMinute  Int     @default(480)
+
+  pushEnabled       Boolean @default(true)
+  telegramEnabled   Boolean @default(false)
+  emailEnabled      Boolean @default(false)
+  /// Abonnement Web Push (endpoint + clés publiques du navigateur).
+  pushSubscription  Json?
+  telegramChatId    String?
+  /// Adresse de notification si différente de User.email.
+  notificationEmail String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("notification_settings")
+}
+
+/// Clés API d'une plateforme. Clé publique et secret sont chiffrés (AES-256-GCM) :
+/// jamais en clair, jamais loguées, jamais renvoyées par l'API.
+model ExchangeConfig {
+  id       String   @id @default(uuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exchange Exchange
+  /// Nom donné par l'utilisateur (« Binance principal »).
+  label    String
+  /// Testnet / sandbox de la plateforme.
+  sandbox  Boolean  @default(false)
+
+  apiKeyCipher    String
+  apiKeyIv        String
+  apiKeyTag       String
+  apiSecretCipher String
+  apiSecretIv     String
+  apiSecretTag    String
+  /// Version de la clé maître utilisée (rotation). Commune aux deux champs.
+  keyVersion      Int
+  /// 4 derniers caractères de la clé publique, pour l'affichage (« …a1b2 »).
+  apiKeyHint      String
+
+  status       ExchangeStatus @default(PENDING)
+  /// Motif lisible du refus quand status = REJECTED.
+  statusReason String?
+  /// Permissions relevées par le vérificateur de la plateforme (ex. ["read", "trade"]).
+  permissions  String[]
+  verifiedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tradeLogs TradeLog[]
+
+  @@unique([userId, exchange, label])
+  @@index([userId, status])
+  @@map("exchange_configs")
+}
+
+model RiskSettings {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// % max du capital total engagé sur une position.
+  maxExposurePct       Decimal @default(5) @db.Decimal(5, 2)
+  /// Perte journalière max (en % positif) : au-delà, pause du robot + alerte critique.
+  maxDailyLossPct      Decimal @default(3) @db.Decimal(5, 2)
+  defaultStopLossPct   Decimal @default(3) @db.Decimal(5, 2)
+  defaultTakeProfitPct Decimal @default(6) @db.Decimal(5, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("risk_settings")
+}
+
+/// Position détenue (une ligne par symbole et par utilisateur).
+model Asset {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Symbole de l'actif détenu (« BTC », « ETH »).
+  symbol      String
+  quantity    Decimal @db.Decimal(38, 18)
+  /// Prix d'achat moyen, en User.baseCurrency.
+  avgBuyPrice Decimal @db.Decimal(38, 8)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, symbol])
+  @@map("assets")
+}
+
+/// Journal complet des ordres. Jamais supprimé.
+model TradeLog {
+  id               String          @id @default(uuid())
+  userId           String
+  user             User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  /// Null en mode PAPER sans plateforme configurée.
+  exchangeConfigId String?
+  exchangeConfig   ExchangeConfig? @relation(fields: [exchangeConfigId], references: [id], onDelete: Restrict)
+
+  /// Identifiant idempotent envoyé à la plateforme : un retry ne crée jamais de doublon.
+  clientOrderId   String      @unique
+  /// Identifiant attribué par la plateforme.
+  exchangeOrderId String?
+  mode            TradingMode
+
+  /// Paire (« BTC/USDT »).
+  symbol String
+  side   OrderSide
+  type   OrderType   @default(MARKET)
+  status OrderStatus @default(PENDING)
+
+  quantity        Decimal  @db.Decimal(38, 18)
+  filledQuantity  Decimal  @default(0) @db.Decimal(38, 18)
+  /// Prix limite demandé (null pour un ordre au marché).
+  price           Decimal? @db.Decimal(38, 8)
+  avgFillPrice    Decimal? @db.Decimal(38, 8)
+  fee             Decimal? @db.Decimal(38, 18)
+  feeCurrency     String?
+  stopLossPrice   Decimal? @db.Decimal(38, 8)
+  takeProfitPrice Decimal? @db.Decimal(38, 8)
+
+  /// ID du message dans le Redis Stream `signals` (traçabilité).
+  signalStreamId String?
+  /// Signal d'origine tel que reçu du moteur : action, score, justification.
+  signalPayload  Json?
+  failureReason  String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  executedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@index([signalStreamId])
+  @@map("trade_logs")
+}
+
+model AlertConfig {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Symbole surveillé ; null pour une condition portant sur le portefeuille entier.
+  assetSymbol     String?
+  condition       AlertCondition
+  /// % pour *_PCT, prix pour PRICE_CROSS_*.
+  threshold       Decimal             @db.Decimal(38, 8)
+  /// Fenêtre glissante en minutes (60 = 1 h, 1440 = 24 h, 10080 = 7 j) ; null pour PRICE_CROSS_*.
+  windowMinutes   Int?
+  channel         NotificationChannel
+  isActive        Boolean             @default(true)
+  /// Critique : passe même en Mode Nuit.
+  isCritical      Boolean             @default(false)
+  lastTriggeredAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, isActive])
+  @@index([assetSymbol, isActive])
+  @@map("alert_configs")
+}
+
+model DigestReport {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  period            DigestPeriod
+  periodStart       DateTime
+  periodEnd         DateTime
+  /// Synthèse textuelle (« Nuit calme… »).
+  summary           String       @db.Text
+  /// Points clés affichés sous la synthèse.
+  points            String[]
+  /// Variation du portefeuille sur la période, en %.
+  portfolioDeltaPct Decimal?     @db.Decimal(7, 2)
+  /// Alertes non critiques mises en attente pendant le Mode Nuit et incluses dans ce rapport.
+  queuedAlertsCount Int          @default(0)
+  /// Null = non lu.
+  readAt            DateTime?
+  generatedAt       DateTime     @default(now())
+
+  /// Rend la génération idempotente : un seul rapport par utilisateur, période et début.
+  @@unique([userId, period, periodStart])
+  @@index([userId, generatedAt])
+  @@map("digest_reports")
+}
+
+/// Journal d'audit immuable (UPDATE / DELETE / TRUNCATE interdits par trigger, cf. migration).
+/// Ne contient jamais de secret : metadata ne reçoit que des identifiants et des valeurs non sensibles.
+model AuditLog {
+  id     String  @id @default(uuid())
+  /// Null pour un événement système. Restrict : l'utilisateur est désactivé, pas supprimé.
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// Action au format « domaine.verbe » (ex. exchange.key_added, mode.live_enabled,
+  /// kill_switch.activated, order.placed). Chaîne libre pour ne pas migrer à chaque nouvelle action.
+  action     String  @db.VarChar(64)
+  entityType String? @db.VarChar(64)
+  entityId   String?
+  metadata   Json?
+  ipAddress  String?
+  userAgent  String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
 }
