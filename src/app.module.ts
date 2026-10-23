@@ -9,6 +9,7 @@ import { AuthGuard } from './auth/auth.guard.js';
 import { AuthModule } from './auth/auth.module.js';
 import { CryptoModule } from './crypto/crypto.module.js';
 import { ExchangesModule } from './exchanges/exchanges.module.js';
+import { NotificationsModule } from './notifications/notifications.module.js';
 import { PortfolioModule } from './portfolio/portfolio.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { RiskMonitorModule } from './risk/monitor/risk-monitor.module.js';
@@ -26,6 +27,7 @@ import { RiskModule } from './risk/risk.module.js';
     ExchangesModule,
     RiskModule,
     PortfolioModule,
+    NotificationsModule,
     RiskMonitorModule.register(),
   ],
   controllers: [AppController],

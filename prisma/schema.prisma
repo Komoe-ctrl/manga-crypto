@@ -79,6 +79,13 @@ enum NotificationChannel {
   EMAIL
 }
 
+enum NotificationStatus {
+  /// Mise en attente par le Mode Nuit, destinée au rapport du matin.
+  HELD
+  /// Envoyée (ou tentée) sur les canaux activés.
+  DISPATCHED
+}
+
 enum DigestPeriod {
   TODAY
   YESTERDAY
@@ -122,8 +129,34 @@ model User {
   auditLogs            AuditLog[]
   refreshTokens        RefreshToken[]
   equitySnapshots      EquitySnapshot[]
+  notifications        Notification[]
 
   @@map("users")
+}
+
+/// Notification : un événement par ligne, qui sert aussi de boîte de réception. Le Mode Nuit met les
+/// notifications non critiques en attente (HELD) ; les autres sont envoyées sur les canaux activés (DISPATCHED).
+model Notification {
+  id         String             @id @default(uuid())
+  userId     String
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String             @db.VarChar(200)
+  body       String             @db.Text
+  /// Critique : passe même en Mode Nuit.
+  critical   Boolean            @default(false)
+  status     NotificationStatus
+  /// Résultat par canal : [{ channel, status: "SENT" | "FAILED", reason? }]. Vide si aucun canal n'est activé.
+  deliveries Json               @default("[]")
+  /// Évite les doublons d'un même événement (ex. « daily-loss:2026-10-23 ») ; null = pas de déduplication.
+  dedupeKey  String?            @db.VarChar(120)
+  /// Null = non lue.
+  readAt     DateTime?
+  createdAt  DateTime           @default(now())
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@map("notifications")
 }
 
 /// Valeur du portefeuille à l'ouverture de la journée locale de l'utilisateur : base de la perte journalière.

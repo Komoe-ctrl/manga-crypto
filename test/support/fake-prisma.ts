@@ -40,6 +40,20 @@ export class FakePrisma {
         ),
       };
       this.users.push(row);
+      // Valeurs par défaut du schéma Prisma (NotificationSettings).
+      this.notificationSettingsRows.push({
+        userId: row.id,
+        nightModeEnabled: true,
+        nightStartMinute: 1320,
+        nightEndMinute: 420,
+        digestEnabled: true,
+        digestMinute: 480,
+        pushEnabled: true,
+        telegramEnabled: false,
+        emailEnabled: false,
+        telegramChatId: null,
+        notificationEmail: null,
+      });
       // Valeurs par défaut du schéma Prisma (RiskSettings).
       this.riskSettingsRows.push({
         userId: row.id,
@@ -96,6 +110,116 @@ export class FakePrisma {
         row[key] = new Prisma.Decimal(value as number);
       }
       return pick(row, select);
+    },
+  };
+
+  notificationSettingsRows: Row[] = [];
+
+  notificationSettings = {
+    findUnique: async ({ where, select }: Row) => {
+      const row = this.notificationSettingsRows.find(
+        (r) => r.userId === where.userId,
+      );
+      return row ? pick(row, select) : null;
+    },
+    update: async ({ where, data, select }: Row) => {
+      const row = this.notificationSettingsRows.find(
+        (r) => r.userId === where.userId,
+      )!;
+      Object.assign(row, data);
+      return pick(row, select);
+    },
+  };
+
+  notifications: Row[] = [];
+
+  notification = {
+    create: async ({ data, select }: Row) => {
+      if (
+        data.dedupeKey &&
+        this.notifications.some(
+          (n) => n.userId === data.userId && n.dedupeKey === data.dedupeKey,
+        )
+      ) {
+        throw new Prisma.PrismaClientKnownRequestError(
+          'Unique constraint failed',
+          { code: 'P2002', clientVersion: 'test' },
+        );
+      }
+      const row = {
+        id: randomUUID(),
+        critical: false,
+        deliveries: [],
+        dedupeKey: null,
+        readAt: null,
+        createdAt: this.tick(),
+        ...Object.fromEntries(
+          Object.entries(data).filter(([, v]) => v !== undefined),
+        ),
+      };
+      this.notifications.push(row);
+      return pick({ ...row }, select);
+    },
+    findFirst: async ({ where, select }: Row) => {
+      const row = this.notifications.find((n) => matches(n, where));
+      return row ? pick({ ...row }, select) : null;
+    },
+    findMany: async ({ where, orderBy, take, select }: Row) => {
+      const rows = this.notifications
+        .filter((n) => matches(n, where))
+        .sort((a, b) =>
+          orderBy?.createdAt === 'desc'
+            ? b.createdAt - a.createdAt
+            : a.createdAt - b.createdAt,
+        )
+        .slice(0, take);
+      return rows.map((r) => pick({ ...r }, select));
+    },
+    count: async ({ where }: Row) =>
+      this.notifications.filter((n) => matches(n, where)).length,
+    update: async ({ where, data, select }: Row) => {
+      const row = this.notifications.find((n) => n.id === where.id)!;
+      Object.assign(row, data);
+      return pick({ ...row }, select);
+    },
+    updateMany: async ({ where, data }: Row) => {
+      const rows = this.notifications.filter((n) => matches(n, where));
+      rows.forEach((n) => Object.assign(n, data));
+      return { count: rows.length };
+    },
+  };
+
+  alertConfigs: Row[] = [];
+
+  alertConfig = {
+    count: async ({ where }: Row) =>
+      this.alertConfigs.filter((a) => matches(a, where)).length,
+    create: async ({ data, select }: Row) => {
+      const row = {
+        id: randomUUID(),
+        lastTriggeredAt: null,
+        createdAt: this.tick(),
+        ...data,
+      };
+      this.alertConfigs.push(row);
+      return pick({ ...row }, select);
+    },
+    findMany: async ({ where, select }: Row) =>
+      this.alertConfigs
+        .filter((a) => matches(a, where))
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((a) => pick({ ...a }, select)),
+    findFirst: async ({ where, select }: Row) => {
+      const row = this.alertConfigs.find((a) => matches(a, where));
+      return row ? pick({ ...row }, select) : null;
+    },
+    update: async ({ where, data, select }: Row) => {
+      const row = this.alertConfigs.find((a) => a.id === where.id)!;
+      Object.assign(row, data);
+      return pick({ ...row }, select);
+    },
+    delete: async ({ where }: Row) => {
+      this.alertConfigs = this.alertConfigs.filter((a) => a.id !== where.id);
     },
   };
 
@@ -232,7 +356,9 @@ function matches(row: Row, where: Row): boolean {
       ? row[key] instanceof Date && row[key].getTime() === value.getTime()
       : value !== null && typeof value === 'object' && 'not' in value
         ? row[key] !== value.not
-        : row[key] === value,
+        : value !== null && typeof value === 'object' && 'lt' in value
+          ? row[key] < value.lt
+          : row[key] === value,
   );
 }
 

@@ -1,5 +1,6 @@
 import { FakePrisma } from '../../../test/support/fake-prisma.js';
 import { AuditService } from '../../audit/audit.service.js';
+import type { NotificationService } from '../../notifications/notification.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { TransactionSide } from '../../portfolio/dto/portfolio.dto.js';
 import { PortfolioService } from '../../portfolio/portfolio.service.js';
@@ -29,6 +30,9 @@ async function build(timezone = 'UTC') {
       );
     }),
   };
+  const notifications = {
+    notify: vi.fn(async (_userId: string, _input: object, _now?: Date) => null),
+  };
   const user = await prisma.user.create({
     data: { email: 'a@example.com', passwordHash: 'x', timezone },
     select: { id: true },
@@ -41,7 +45,14 @@ async function build(timezone = 'UTC') {
     market,
     provider,
     setDown: (value: boolean) => (down = value),
-    monitor: new DailyLossMonitor(asPrisma, portfolio, provider, audit),
+    notifications,
+    monitor: new DailyLossMonitor(
+      asPrisma,
+      portfolio,
+      provider,
+      audit,
+      notifications as unknown as NotificationService,
+    ),
     declare: (
       symbol: string,
       side: TransactionSide,
@@ -112,6 +123,60 @@ describe('DailyLossMonitor', () => {
         maxDailyLossPct: '3',
         pausedUntil: '2026-10-24T00:00:00.000Z',
       },
+    });
+  });
+
+  describe('alerte critique', () => {
+    async function paused() {
+      const ctx = await build();
+      await ctx.declare('BTC', TransactionSide.BUY, '2');
+      await ctx.monitor.checkUser(ctx.userId, NOW);
+      ctx.market.BTC = 90;
+      return ctx;
+    }
+
+    it('envoie une notification critique avec une clé de déduplication par jour local', async () => {
+      const { monitor, userId, notifications } = await paused();
+      await monitor.checkUser(userId, NOW);
+
+      expect(notifications.notify).toHaveBeenCalledTimes(1);
+      expect(notifications.notify).toHaveBeenCalledWith(
+        userId,
+        expect.objectContaining({
+          title: 'Perte journalière maximale atteinte',
+          critical: true,
+          dedupeKey: 'daily-loss:2026-10-23',
+          body: expect.stringContaining('10 %'),
+        }),
+        NOW,
+      );
+    });
+
+    it("n'envoie rien tant que le seuil n'est pas atteint, ni quand la pause est déjà active", async () => {
+      const { monitor, userId, notifications, market } = await build().then(
+        async (ctx) => {
+          await ctx.declare('BTC', TransactionSide.BUY, '2');
+          await ctx.monitor.checkUser(ctx.userId, NOW);
+          return ctx;
+        },
+      );
+      market.BTC = 99;
+      await monitor.checkUser(userId, NOW);
+      expect(notifications.notify).not.toHaveBeenCalled();
+
+      market.BTC = 90;
+      await monitor.checkUser(userId, NOW);
+      await monitor.checkUser(userId, NOW);
+      expect(notifications.notify).toHaveBeenCalledTimes(1);
+    });
+
+    it("ne défait pas la pause quand l'envoi échoue", async () => {
+      const { monitor, userId, notifications, prisma } = await paused();
+      notifications.notify.mockRejectedValue(new Error('canal en panne'));
+
+      await expect(monitor.checkUser(userId, NOW)).resolves.toBe('paused');
+      expect(prisma.users[0].botPausedUntil).not.toBeNull();
+      expect(prisma.auditLogs.at(-1)?.action).toBe('risk.daily_loss_paused');
     });
   });
 
