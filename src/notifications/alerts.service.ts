@@ -32,6 +32,7 @@ const SELECT = {
   channel: true,
   isActive: true,
   isCritical: true,
+  isTriggered: true,
   lastTriggeredAt: true,
   createdAt: true,
 } as const;
@@ -170,6 +171,8 @@ export class AlertsService {
       data: {
         threshold: shape.threshold,
         windowMinutes: shape.windowMinutes,
+        // Changer le seuil, la fenêtre ou l'activation ré-arme l'alerte : l'ancien état « déclenchée » ne vaut plus.
+        ...(rearms(dto) && { isTriggered: false }),
         ...(dto.channel !== undefined && {
           channel: dto.channel as NotificationChannel,
         }),
@@ -215,6 +218,11 @@ export class AlertsService {
   }
 }
 
+const rearms = (dto: UpdateAlertDto): boolean =>
+  dto.threshold !== undefined ||
+  dto.windowMinutes !== undefined ||
+  dto.isActive !== undefined;
+
 function refuseIfInvalid(shape: AlertShape): void {
   const problem = alertProblem(shape);
   if (problem) throw new UnprocessableEntityException(problem);
@@ -229,6 +237,7 @@ const toDto = (row: {
   channel: NotificationChannel;
   isActive: boolean;
   isCritical: boolean;
+  isTriggered: boolean;
   lastTriggeredAt: Date | null;
   createdAt: Date;
 }): AlertDto => ({

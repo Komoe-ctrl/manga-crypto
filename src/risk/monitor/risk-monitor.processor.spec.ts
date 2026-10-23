@@ -1,11 +1,10 @@
-﻿import type { Queue } from 'bullmq';
+import type { Queue } from 'bullmq';
 import { FakePrisma } from '../../../test/support/fake-prisma.js';
 import type { PrismaService } from '../../prisma/prisma.service.js';
 import type {
   DailyLossMonitor,
   DailyLossOutcome,
 } from './daily-loss.monitor.js';
-import { redisOptions } from './redis-connection.js';
 import {
   CHECK_INTERVAL_MS,
   RiskMonitorProcessor,
@@ -20,7 +19,7 @@ async function build(outcomes: Record<string, DailyLossOutcome | Error>) {
       select: { id: true },
     });
   }
-  // L'identifiant est gÃ©nÃ©rÃ© par la base : on le remplace par celui du scÃ©nario.
+  // L'identifiant est généré par la base : on le remplace par celui du scénario.
   prisma.users.forEach((u, i) => (u.id = Object.keys(outcomes)[i]));
 
   const monitor = {
@@ -40,7 +39,7 @@ async function build(outcomes: Record<string, DailyLossOutcome | Error>) {
 }
 
 describe('RiskMonitorProcessor', () => {
-  it('vÃ©rifie chaque utilisateur actif et compte les pauses', async () => {
+  it('vérifie chaque utilisateur actif et compte les pauses', async () => {
     const { processor, monitor } = await build({
       a: 'ok',
       b: 'paused',
@@ -54,7 +53,7 @@ describe('RiskMonitorProcessor', () => {
     expect(monitor.checkUser).toHaveBeenCalledTimes(3);
   });
 
-  it("isole l'Ã©chec d'un utilisateur : les autres sont quand mÃªme surveillÃ©s", async () => {
+  it("isole l'échec d'un utilisateur : les autres sont quand même surveillés", async () => {
     const { processor, monitor } = await build({
       a: 'paused',
       b: new Error('base indisponible'),
@@ -70,7 +69,7 @@ describe('RiskMonitorProcessor', () => {
 });
 
 describe('RiskMonitorScheduler', () => {
-  it('programme un job rÃ©pÃ©table toutes les 5 minutes, de faÃ§on idempotente (mÃªme identifiant)', async () => {
+  it('programme un job répétable toutes les 5 minutes, de façon idempotente (même identifiant)', async () => {
     const queue = { upsertJobScheduler: vi.fn(async () => undefined) };
     await new RiskMonitorScheduler(queue as unknown as Queue).onModuleInit();
     expect(queue.upsertJobScheduler).toHaveBeenCalledWith(
@@ -79,32 +78,5 @@ describe('RiskMonitorScheduler', () => {
       { name: 'check' },
     );
     expect(CHECK_INTERVAL_MS).toBe(300_000);
-  });
-});
-
-describe('redisOptions', () => {
-  it('lit hÃ´te, port et base', () => {
-    expect(redisOptions('redis://localhost:6379')).toMatchObject({
-      host: 'localhost',
-      port: 6379,
-      db: undefined,
-    });
-    expect(redisOptions('redis://cache.internal:6380/2')).toMatchObject({
-      host: 'cache.internal',
-      port: 6380,
-      db: 2,
-    });
-  });
-
-  it('utilise le port par dÃ©faut', () => {
-    expect(redisOptions('redis://localhost')).toMatchObject({ port: 6379 });
-  });
-
-  it('dÃ©code les identifiants et active TLS pour rediss://', () => {
-    expect(redisOptions('rediss://user:p%40ss@host:6379')).toMatchObject({
-      username: 'user',
-      password: 'p@ss',
-      tls: {},
-    });
   });
 });

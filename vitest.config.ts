@@ -7,8 +7,8 @@ export default defineConfig({
   plugins: [tsconfigPaths()],
   test: {
     globals: true,
-    // Les tests n'ouvrent jamais de connexion Redis : la surveillance BullMQ est désactivée.
-    env: { RISK_MONITOR_ENABLED: 'false' },
+    // Les tests n'ouvrent jamais de connexion Redis : les jobs de fond BullMQ sont désactivés.
+    env: { BACKGROUND_JOBS_ENABLED: 'false' },
     root: './',
     include: ['**/*.spec.ts'],
     // Les tests de services enchaînent des hachages argon2 (volontairement lents) pendant que les fichiers tournent en parallèle.

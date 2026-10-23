@@ -193,7 +193,7 @@ Source de prix injoignable, prix manquant pour une position actuelle ou d'ouvert
 ### D46. L'alerte critique est reportée au module de notifications *(résolu à l'étape 7, D54)*
 Le centre de notifications (module 3 de la SPEC) n'existait pas encore. La pause écrit l'audit `risk.daily_loss_paused` (valeur d'ouverture, valeur courante, perte en %, seuil, fin de pause) et un log d'avertissement ; un `TODO` marque le point où brancher l'alerte critique, qui devra passer **même en Mode Nuit** (SPEC 3).
 
-### D47. `RISK_MONITOR_ENABLED=false` pour les tests ; vérification sur un vrai Redis
+### D47. Pas de Redis dans les tests ; vérification sur un vrai Redis *(variable renommée `BACKGROUND_JOBS_ENABLED` à l'étape 8, D58)*
 Les tests n'ouvrent jamais de connexion Redis : `RISK_MONITOR_ENABLED=false` est posé par la configuration Vitest et le module ne s'enregistre pas (`RiskMonitorModule.register()`). Le câblage réel a été vérifié à part, sur une **base PostgreSQL temporaire** et la base Redis n° 9 (toutes deux supprimées ensuite) : démarrage, programmation du job, création de l'instantané avec les vrais prix de Binance, pause simulée par une valeur d'ouverture gonflée, absence de doublon au passage suivant. C'est cette vérification qui a révélé le défaut de D40.
 Le délai par défaut des tests **unitaires** passe aussi à 20 s (comme l'e2e, D31) : les tests de services enchaînent des hachages argon2 pendant que les fichiers tournent en parallèle.
 
@@ -231,6 +231,44 @@ Comme à l'étape 6 (D47), l'application a été lancée sur une base temporaire
 
 ---
 
+## Étape 8 — Moteur d'évaluation des alertes
+
+### D56. Plan du module 3 remanié : trois étapes
+Étape 7 : cœur des notifications. **Étape 8 : moteur d'évaluation des alertes.** Étape 9 : rapport du matin (digest) de 08:00, qui reprend les notifications `HELD` et solde D48.
+
+### D57. Une alerte notifie au franchissement, pas à chaque passage
+Colonne `AlertConfig.isTriggered` (migration `add_alert_triggered_state`) : l'alerte notifie quand sa condition **devient vraie**, reste silencieuse tant qu'elle est vraie, et **se ré-arme** quand elle redevient fausse. Sans cet état, une alerte « ETH franchit 3 500 $ » enverrait un message par minute.
+- **Prise d'état atomique** : `UPDATE … WHERE id = … AND isTriggered = false` ; si deux évaluations se croisent, une seule obtient la ligne et notifie.
+- **Échec d'envoi** : l'état est rendu (`isTriggered = false`, `lastTriggeredAt` d'origine) et l'erreur comptée ; le passage suivant réessaie au lieu de perdre l'alerte.
+- **Anti-rebond de 15 minutes** entre deux déclenchements : un prix qui oscille autour du seuil ne spamme pas. Un franchissement retenu n'est pas perdu : si la condition est toujours vraie après le délai, l'alerte notifie.
+- **Modifier le seuil, la fenêtre ou `isActive` ré-arme** l'alerte (l'ancien état ne vaut plus) ; modifier le canal ou la criticité, non. `AlertDto` expose `isTriggered` (armée / déclenchée).
+
+### D58. Jobs de fond : une connexion partagée, une variable pour tous
+`QueueModule` porte l'unique `BullModule.forRoot` et le client Redis (déplacé dans `src/queue/`) ; les modules de jobs ne déclarent plus que leur file. `RISK_MONITOR_ENABLED` devient **`BACKGROUND_JOBS_ENABLED`** et désactive *tous* les jobs (perte journalière, alertes) sans ouvrir de connexion Redis ; Vitest la pose à `false`.
+
+### D59. Historique de prix : bougies d'une minute de l'API publique de Binance, sans stockage
+`PriceProvider.getPriceAt(symbole, instant)` lit l'ouverture de la bougie `1m` de la paire `<SYMBOLE>USDT` (`/api/v3/klines`, sans clé). Pas de table d'historique à maintenir : la fenêtre (de 5 minutes à 7 jours) se lit à la demande. L'instant est arrondi à la minute ; cache de 5 minutes (500 entrées au plus), l'absence de donnée est aussi mise en cache.
+- Paire inconnue (`-1121`) → `null` (« pas de prix », pas une panne). Panne, 418/429, réponse inattendue → `PriceUnavailableError`.
+- **Actif pas encore coté à la date demandée** : Binance renvoie la première bougie *après* `startTime` ; si elle est à plus de 5 minutes de la date, on renvoie `null` plutôt que de prendre un prix qui n'est pas celui de la date.
+
+### D60. On ne conclut pas sur des données manquantes
+`conditionMet` renvoie `null` quand un prix manque (courant ou passé, ou prix passé nul) : **l'état de l'alerte n'est alors pas modifié** (ni déclenchement, ni ré-armement), et le passage compte l'alerte comme ignorée. Prix courants injoignables : tout est ignoré. Historique injoignable : seules les alertes à fenêtre sont ignorées. Applique D38 et D45. Seuil atteint = condition remplie (égalité incluse).
+
+### D61. Variations et portefeuille
+Variation = `(courant − passé) / passé × 100`, en `Decimal`. `PORTFOLIO_DROP_PCT` compare la valeur des **positions actuelles** aux prix passés à leur valeur aux prix courants (mouvement de marché, comme D43) ; une position sans prix courant ou passé fait ignorer l'alerte, un portefeuille vide aussi. Les prix passés sont partagés entre alertes du même (symbole, fenêtre) pendant un passage.
+
+### D62. Le canal de l'alerte est respecté ; le Mode Nuit aussi
+`NotifyInput.channel` impose le canal (maquette : un canal par alerte) : la notification n'est envoyée que sur celui-là, **sans tenir compte des canaux activés globalement** ; si le canal échoue (conversation Telegram manquante), l'échec est enregistré, on ne bascule pas sur un autre. Le Mode Nuit reste appliqué selon `isCritical` : une alerte non critique la nuit est mise en attente pour le rapport du matin.
+
+### D63. Messages : petits nombres lisibles
+Même tournure que les alertes de la maquette (« BTC −5 % en 1 h », « ETH franchit 3 500 $ à la hausse », « Portefeuille −10 % sur 7 jours »). **Défaut trouvé par la vérification sur le vrai système :** un seuil de 0,0001 % s'affichait « +0 % » (arrondi à 2 décimales). En dessous de 1, le formatage garde 4 chiffres significatifs (`0,0001 %`, `0,00001234 $`). Les espaces insécables du formatage français sont remplacés par des espaces simples (Telegram, journaux).
+
+### D64. Vérification sur le vrai PostgreSQL, Redis et Binance
+Comme aux étapes 6 et 7 : base temporaire et Redis n° 9, cours et historique réels de Binance. Constaté : l'historique est bien lu (alerte de hausse sur 1 h déclenchée avec la variation réelle), aucun doublon au passage suivant, ré-armement par modification du seuil, anti-rebond respecté.
+*Non couvert par cette vérification :* l'alerte de portefeuille (le marché n'avait pas baissé) et le déclenchement d'une alerte de baisse ; ils sont couverts par les tests unitaires.
+
+---
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
@@ -241,7 +279,9 @@ Comme à l'étape 6 (D47), l'application a été lancée sur une base temporaire
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
-| **Étape 8** : moteur d'évaluation des alertes + rapport du matin 08:00 | Voir D48 : évaluer les `AlertConfig` sur les prix (état « déjà déclenchée » pour ne notifier qu'au franchissement), générer le digest depuis les notifications `HELD`. |
+| **Étape 9** : rapport du matin 08:00 | Voir D48 et D56 : générer le digest depuis les notifications `HELD` de la nuit (les marquer comme reprises), à l'heure `digestMinute` de chaque utilisateur, dans son fuseau. |
+| Alertes : valeur de la dernière évaluation | L'API n'expose pas le prix observé ni l'écart au seuil (« ETH à ~2,5 % de votre seuil », maquette) ; à ajouter si le front en a besoin. |
+| Cache Redis des prix et de l'historique | Voir D36 : les prix passés sont aujourd'hui en mémoire (perdus au redémarrage, non partagés entre instances). |
 | Envoyeurs Push (Web Push) et Email (SMTP) | Voir D51 : demandent `web-push` et `nodemailer`, à valider. Sans eux, les alertes critiques ne sortent pas de la boîte de réception. |
 | Passerelle WebSocket vers le front | La boîte de réception se lit aujourd'hui par `GET /api/notifications` ; le temps réel (socket.io) viendra avec le front. |
 | Purge des anciennes notifications | La table grossit sans limite. |

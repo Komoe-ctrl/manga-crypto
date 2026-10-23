@@ -169,6 +169,62 @@ describe('NotificationService', () => {
     });
   });
 
+  describe('canal imposé (alerte configurée sur un canal)', () => {
+    it("n'envoie que sur ce canal, même s'il n'est pas activé dans les réglages", async () => {
+      const { service, userId, senders, settings } = await build();
+      Object.assign(settings, { telegramChatId: '42' }); // Telegram non activé globalement
+
+      const sent = await service.notify(
+        userId,
+        { ...msg, channel: 'TELEGRAM' },
+        DAY,
+      );
+
+      expect(sent?.deliveries).toEqual([
+        { channel: 'TELEGRAM', status: 'SENT' },
+      ]);
+      expect(senders[1].send).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ telegramChatId: '42' }),
+      );
+      expect(senders[0].send).not.toHaveBeenCalled(); // Push est activé mais non demandé
+    });
+
+    it("signale l'échec du canal imposé (conversation manquante) sans basculer sur un autre", async () => {
+      const failing = [
+        {
+          channel: 'TELEGRAM' as const,
+          send: vi.fn(async () => ({
+            channel: 'TELEGRAM' as const,
+            status: 'FAILED' as const,
+            reason: 'telegram_no_chat',
+          })),
+        },
+        stubSender('PUSH'),
+      ];
+      const { service, userId } = await build('UTC', failing as never);
+      const sent = await service.notify(
+        userId,
+        { ...msg, channel: 'TELEGRAM' },
+        DAY,
+      );
+      expect(sent?.deliveries).toEqual([
+        { channel: 'TELEGRAM', status: 'FAILED', reason: 'telegram_no_chat' },
+      ]);
+    });
+
+    it('respecte le Mode Nuit : une alerte non critique sur un canal imposé est mise en attente', async () => {
+      const { service, userId, senders } = await build();
+      const held = await service.notify(
+        userId,
+        { ...msg, channel: 'TELEGRAM' },
+        NIGHT,
+      );
+      expect(held?.status).toBe('HELD');
+      senders.forEach((s) => expect(s.send).not.toHaveBeenCalled());
+    });
+  });
+
   describe('Mode Nuit', () => {
     it('met une notification non critique en attente, sans rien envoyer', async () => {
       const { service, userId, senders, prisma } = await build();

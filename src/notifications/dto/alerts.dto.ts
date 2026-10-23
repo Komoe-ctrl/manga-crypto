@@ -92,6 +92,11 @@ export class AlertDto {
   channel: NotificationChannel;
   @ApiProperty() isActive: boolean;
   @ApiProperty() isCritical: boolean;
+  @ApiProperty({
+    description:
+      'Vrai si la condition est remplie et l’utilisateur déjà notifié ; faux = alerte armée',
+  })
+  isTriggered: boolean;
   @ApiProperty({ nullable: true, type: Date }) lastTriggeredAt: Date | null;
   @ApiProperty() createdAt: Date;
 }
