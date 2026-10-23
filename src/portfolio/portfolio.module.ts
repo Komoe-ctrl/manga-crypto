@@ -13,6 +13,6 @@ import { PriceProvider } from './price/price-provider.js';
     // Remplaçable par une lecture du cache Redis sans toucher à la valorisation.
     { provide: PriceProvider, useClass: BinancePriceProvider },
   ],
-  exports: [PortfolioService, PortfolioValuationService],
+  exports: [PortfolioService, PortfolioValuationService, PriceProvider],
 })
 export class PortfolioModule {}

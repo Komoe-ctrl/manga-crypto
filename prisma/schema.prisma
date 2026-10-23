@@ -121,8 +121,28 @@ model User {
   digestReports        DigestReport[]
   auditLogs            AuditLog[]
   refreshTokens        RefreshToken[]
+  equitySnapshots      EquitySnapshot[]
 
   @@map("users")
+}
+
+/// Valeur du portefeuille à l'ouverture de la journée locale de l'utilisateur : base de la perte journalière.
+model EquitySnapshot {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Jour dans le fuseau de l'utilisateur, « YYYY-MM-DD ».
+  localDate  String   @db.VarChar(10)
+  /// Valeur d'ouverture en USD.
+  equity     Decimal  @db.Decimal(38, 8)
+  /// Positions d'ouverture : [{ symbol, quantity, price }] en chaînes décimales. La perte est calculée sur
+  /// ces positions, pour que les achats et ventes déclarés dans la journée ne la faussent pas.
+  holdings   Json
+  capturedAt DateTime @default(now())
+
+  /// Un seul instantané par utilisateur et par jour local.
+  @@unique([userId, localDate])
+  @@map("equity_snapshots")
 }
 
 /// Refresh token opaque : seul son hash SHA-256 est stocké. Rotation à chaque usage ;

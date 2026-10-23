@@ -50,6 +50,8 @@ export class FakePrisma {
       });
       return pick(row, select);
     },
+    findMany: async ({ where, select }: Row) =>
+      this.users.filter((u) => matches(u, where)).map((u) => pick(u, select)),
     update: async ({ where, data, select }: Row) => {
       const row = this.users.find((u) => u.id === where.id)!;
       Object.assign(row, data);
@@ -94,6 +96,34 @@ export class FakePrisma {
         row[key] = new Prisma.Decimal(value as number);
       }
       return pick(row, select);
+    },
+  };
+
+  equitySnapshots: Row[] = [];
+
+  equitySnapshot = {
+    findUnique: async ({ where }: Row) => {
+      const row = this.equitySnapshots.find(
+        (s) =>
+          s.userId === where.userId_localDate.userId &&
+          s.localDate === where.userId_localDate.localDate,
+      );
+      return row ? { ...row } : null;
+    },
+    create: async ({ data }: Row) => {
+      if (
+        this.equitySnapshots.some(
+          (s) => s.userId === data.userId && s.localDate === data.localDate,
+        )
+      ) {
+        throw new Prisma.PrismaClientKnownRequestError(
+          'Unique constraint failed',
+          { code: 'P2002', clientVersion: 'test' },
+        );
+      }
+      const row = { id: randomUUID(), capturedAt: new Date(), ...data };
+      this.equitySnapshots.push(row);
+      return row;
     },
   };
 

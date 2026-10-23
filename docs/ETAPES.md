@@ -170,3 +170,31 @@ GET /api/portfolio
 **Pour la pause sur perte journalière** : `PortfolioValuationService.totalValue(userId)` renvoie la valeur totale, ou `null` si une position n'a pas pu être valorisée (D38).
 
 **Pas encore fait** : valeur d'ouverture du jour et pause automatique (nécessitent instantanés d'équité et planificateur), historique des transactions, synchronisation avec les soldes de la plateforme, cache Redis des prix.
+
+## Étape 6 — Pause automatique sur perte journalière
+
+**Livré** : `src/risk/monitor/` (`DailyLossMonitor`, `RiskMonitorProcessor`, `RiskMonitorScheduler`, `RiskMonitorModule`, `RedisConnection`, `local-day.ts`, `daily-loss.ts`), migration `add_equity_snapshots` (table `equity_snapshots`). **Dépendances ajoutées** : `bullmq`, `@nestjs/bullmq`, `ioredis` (D40).
+
+**Fonctionnement** : toutes les 5 minutes, pour chaque utilisateur actif ayant des positions :
+1. première observation du jour local → instantané d'ouverture (valeur et positions) ;
+2. ensuite, valeur actuelle des **positions d'ouverture** comparée à la valeur d'ouverture ;
+3. perte ≥ `maxDailyLossPct` → `User.botPausedUntil` = prochain minuit local, audit `risk.daily_loss_paused`. `GET /api/risk/status` renvoie alors `canTrade: false`, `blockedReason: "PAUSED_DAILY_LOSS"`.
+
+Aucune route nouvelle. La pause se lève seule à minuit local ; il n'y a pas de bouton « reprendre » (D44).
+
+**Prérequis** : Redis démarré (`npm run db:up`), `REDIS_URL` dans `.env`, migration appliquée (`npm run prisma:migrate`, ou `npx prisma migrate deploy`).
+
+**Variable** : `RISK_MONITOR_ENABLED` (`true` par défaut) ; `false` désactive la surveillance et n'ouvre aucune connexion Redis. Les tests la posent à `false`.
+
+**Journal d'audit** : `risk.daily_loss_paused` — `metadata` : `localDate`, `openEquity`, `currentValue`, `lossPct`, `maxDailyLossPct`, `pausedUntil`.
+
+**Résultat d'un passage** (`DailyLossOutcome`) : `baseline_created`, `ok`, `paused`, `already_paused`, `no_holdings`, `no_prices`, `skipped`. Un passage global renvoie `{ checked, paused, failed }`.
+
+**Vérifier sur un vrai Redis, sans toucher à la base de dev**
+1. Créer une base temporaire (`CREATE DATABASE crypto_smoke`) et y appliquer les migrations : `DATABASE_URL=…/crypto_smoke npx prisma migrate deploy`.
+2. Lancer l'application avec `REDIS_URL=redis://localhost:6379/9` (base Redis n° 9) et cette `DATABASE_URL`.
+3. Créer un compte et une position, puis ajouter un job à la file `risk-monitor` (ou attendre 5 minutes) : un instantané apparaît dans `equity_snapshots`.
+4. Simuler une perte : `update equity_snapshots set equity = 100000` puis relancer un job → `audit_logs` contient `risk.daily_loss_paused` et `/api/risk/status` renvoie `PAUSED_DAILY_LOSS`.
+5. Supprimer la base temporaire et vider la base Redis n° 9.
+
+**Pas encore fait** : alerte critique (D46), pertes dues aux ordres du robot (D43), purge des anciens instantanés.
