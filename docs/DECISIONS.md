@@ -136,6 +136,38 @@ Les parcours enchaînent plusieurs hachages argon2 (volontairement lents) et les
 
 ---
 
+## Étape 5 — Portefeuille et valorisation
+
+### D32. Positions déclarées par l'utilisateur, pour l'instant
+Les positions viennent d'achats/ventes saisis (`POST /api/portfolio/transactions`) ou d'un import (`PUT /api/portfolio/assets/:symbol`). Les relire depuis les soldes de la plateforme demande `ccxt` et les clés déchiffrées : cela viendra avec le module d'ordres, qui est le seul à les déchiffrer (CLAUDE.md). Aucune migration : le modèle `Asset` de l'étape 1 suffit.
+
+### D33. Calcul pur en `Decimal` (`portfolio-math.ts`)
+- Achat : quantité cumulée, **prix moyen pondéré** arrondi à 8 décimales (précision de la colonne).
+- Vente : le prix moyen **ne change pas** ; le gain réalisé est `(prix − prix moyen) × quantité`. Position soldée → ligne supprimée. Vendre plus que détenu (ou sans position) → 422, rien n'est modifié.
+- Le gain réalisé est renvoyé et audité, **pas persisté** : il n'existe pas encore de table d'historique des transactions.
+
+### D34. Quantités et prix : chaînes décimales, jamais des nombres JSON
+Un nombre JSON passe par un flottant et perd de la précision (règle « jamais `Float` »). Les entrées doivent être des chaînes (`"0.015"`), strictement positives, 18 décimales au plus ; `0.5`, `1e3`, `0`, `-1` sont refusés (400). Les sorties sont en notation normale (`toFixed()`, jamais d'exposant `1e-7`), arrondies à 8 décimales pour les montants calculés.
+
+### D35. Concurrence : mise à jour conditionnelle sur `updatedAt`, pas de verrou
+Deux transactions simultanées sur le même actif liraient la même position et l'une écraserait l'autre. Chaque écriture ajoute `WHERE id = … AND updatedAt = <valeur lue>` ; si aucune ligne n'est touchée, **409** « réessayez ». Aucun solde ne se perd silencieusement, sans verrou SQL ni changement de schéma. Création simultanée : la contrainte unique `(userId, symbol)` déclenche le même 409.
+
+### D36. Source de prix derrière une interface (`PriceProvider`)
+Jeton d'injection abstrait. L'implémentation actuelle lit l'API **publique** de Binance (`/api/v3/ticker/price`, sans clé) : un appel récupère toutes les paires `<SYMBOLE>USDT`, mis en **cache 15 s**, appels simultanés fusionnés, échec non mis en cache. Le cache Redis prévu par la SPEC (section D) la remplacera sans toucher à la valorisation.
+- Valorisation en **USD**. Les stablecoins (`USD`, `USDT`, `USDC`, `FDUSD`, `DAI`) valent 1 : approximation assumée, à affiner si un dépeg doit être détecté.
+- `User.baseCurrency` n'est pas encore utilisé : la réponse porte `currency: "USD"`.
+
+### D37. Prix indisponibles : on dégrade, on ne plante pas
+Source injoignable ou symbole inconnu → les positions concernées reviennent avec `currentPrice/value/pnl = null` et la réponse porte `complete: false`. Les **totaux, le P&L et les poids ne comptent que les positions valorisées**, pour rester cohérents entre eux ; `complete` dit si le total est partiel.
+
+### D38. `totalValue()` renvoie `null` si le total est partiel
+Prévu pour la pause sur perte journalière : agir sur un total incomplet (une position sans prix manquante) pourrait déclencher ou rater une pause à tort. Mieux vaut ne pas conclure.
+
+### D39. La base en mémoire des tests renvoie des copies
+Le faux Prisma renvoyait d'abord la ligne elle-même ; une mise à jour la modifiait sous les pieds de l'appelant, ce qui faussait l'audit (valeur « avant » écrasée) et rendait le test de concurrence incapable de détecter une course. Comme Prisma, il renvoie désormais des copies.
+
+---
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
@@ -146,6 +178,9 @@ Les parcours enchaînent plusieurs hachages argon2 (volontairement lents) et les
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
-| Pause automatique sur perte journalière | Voir D30 : dépend du module de portefeuille. |
+| Pause automatique sur perte journalière | Voir D30. Le portefeuille et `totalValue()` existent (étape 5) ; manque la **valeur d'ouverture du jour** : table d'instantanés d'équité + planificateur (BullMQ) qui l'enregistre au début de la journée de chaque utilisateur (fuseau `User.timezone`) et surveille la perte. |
+| Historique des transactions et P&L réalisé | Voir D33 : le gain réalisé n'est qu'audité, pas stocké ni agrégé. |
+| Synchronisation des soldes avec la plateforme | Voir D32 : avec le module d'ordres (`ccxt`). |
+| Source de prix : cache Redis | Voir D36 : remplace l'appel direct à l'API publique. |
 | Contrôle d'éligibilité LIVE à chaque ordre | Voir D28 : la vérification au passage ne suffit pas si une clé est rejetée ensuite. |
 | Tests d'intégration sur PostgreSQL | Compléter les tests sur base en mémoire (D15), notamment le trigger d'audit et les contraintes uniques. |
