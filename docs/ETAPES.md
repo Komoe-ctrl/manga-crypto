@@ -363,3 +363,66 @@ GET /api/digests?period=TODAY&limit=2
 **Vérifier sur un vrai Redis** : même procédure que pour l'étape 6 (base temporaire, Redis n° 9, `npx prisma migrate deploy`). Régler `digestMinute` quelques minutes avant l'heure UTC actuelle (utilisateur en `UTC`), éventuellement une plage de Mode Nuit couvrant l'heure actuelle et une alerte non critique pour avoir une notification en attente, puis ajouter un job `check` à la file `digest` : un rapport apparaît dans `GET /api/digests` et les notifications en attente passent `DIGESTED`. Un second passage ne crée rien.
 
 **Pas encore fait** : soldes et stablecoins du rapport (nécessitent le module d'ordres), purge des anciens rapports, envoyeurs Push et Email (sans eux, l'annonce n'arrive que sur Telegram et dans la boîte de réception).
+## Étape 10 — Exécution des ordres
+
+**Livré** : `src/orders/` (`OrdersService`, `OrderExecutor`, `ExitMonitor`, `OrderDispatcher` avec ses deux implémentations, `ExchangeGateway` et `CcxtGateway`, contrôleur, DTO, règles), migration `add_order_origin_and_exits` (`trade_logs.origin`, `parentOrderId`, `exitTriggeredAt`), `ExchangesService.getLiveCredentials`. **Dépendance ajoutée : `ccxt`** (stack de la SPEC, section B).
+
+### Routes
+
+| Route | Effet |
+|---|---|
+| `POST /api/orders` | Ordre manuel **au marché, mode PAPER uniquement**. 201 avec l'ordre ; **422** avec `order.failureReason` si un garde-fou le refuse (l'ordre est conservé) ; 10 par minute |
+| `GET /api/orders` | Ordres, plus récents d'abord. Paramètres : `limit` (1–100), `before` (date ISO), `status` |
+| `GET /api/orders/:id` | Un ordre ; 404 s'il n'est pas à l'utilisateur |
+| `POST /api/orders/:id/cancel` | Annule un ordre `PENDING` ; 409 s'il est déjà parti |
+
+```json
+POST /api/orders   { "symbol": "BTC", "side": "BUY", "quantity": "0.005" }
+→ 201 { "status": "FILLED", "mode": "PAPER", "symbol": "BTC/USDT", "avgFillPrice": "81697.92", "fee": "0.4084896",
+        "feeCurrency": "USDT", "stopLossPrice": "79246.9824", "takeProfitPrice": "86599.7952", "clientOrderId": "vl-…", … }
+→ 422 { "message": "Exposition maximale par position dépassée", "order": { "status": "REJECTED", "failureReason": "exposure_exceeded", … } }
+```
+Quantité : **chaîne décimale** strictement positive (jamais un nombre JSON). En réponse, le statut peut être `PENDING` (l'ordre est en file) : relire avec `GET /api/orders/:id`.
+
+### Avant de passer un ordre PAPER
+
+**Déclarer son capital en USDT** : `PUT /api/portfolio/assets/USDT` avec `{ "quantity": "10000", "avgBuyPrice": "1" }`. L'achat est payé avec cet USDT (jambe de contrepartie, D81) et l'exposition maximale se calcule sur le capital total. Sans capital, tout achat est refusé (`insufficient_funds`). Exposition par défaut : 5 % du capital par position (`PATCH /api/risk/settings`).
+
+### Parcours d'un ordre
+
+`PENDING` (enregistré, en file) → `SUBMITTED` (pris en charge ; en LIVE, envoyé) → `FILLED` / `PARTIALLY_FILLED`, ou `REJECTED` (refus, avec motif), `CANCELLED`, `FAILED` (abandonné après les essais). Le `clientOrderId` est généré à la création et ne change jamais.
+
+### Motifs de refus (`failureReason`)
+
+| Code | Cause |
+|---|---|
+| `kill_switch`, `paused_daily_loss` | Robot arrêté ou en pause (aussi pour les ventes et les sorties) |
+| `manual_orders_paper_only` | Ordre manuel alors que le mode est LIVE |
+| `symbol_not_tradable` | Stablecoin (`USDT`, `USDC`…) |
+| `insufficient_quantity` | Vente supérieure à la quantité détenue |
+| `price_unavailable` | Prix indisponible : réessayer |
+| `capital_unknown` | Un prix manque : le capital total n'est pas calculable |
+| `exposure_exceeded` | Position déjà détenue + achat > exposition maximale |
+| `insufficient_funds` | Pas assez d'USDT déclaré (PAPER), ou aucun capital |
+| `no_verified_exchange` | LIVE : aucune configuration active, vérifiée et hors testnet |
+| `mode_changed` | LIVE : le mode a changé depuis la création de l'ordre |
+| `below_minimum`, `invalid_order`, `invalid_symbol`, `exchange_auth` | Refus de la plateforme (quantité trop faible, ordre ou paire invalide, clé refusée) |
+| `retries_exhausted` | Plateforme injoignable après tous les essais |
+
+### Stop-loss et take-profit
+
+À l'exécution d'un achat, les deux niveaux sont calculés sur le prix moyen exécuté avec les réglages de risque. Toutes les minutes, un job compare le prix courant aux niveaux des positions ouvertes et, s'il est atteint, vend la quantité de l'entrée (ordre `origin: STOP_LOSS` ou `TAKE_PROFIT`, `parentOrderId` = ordre d'entrée). Stop-loss exécuté : notification **critique**. **Kill switch ou pause : aucune vente, y compris la sortie** ; l'utilisateur est prévenu en critique, une fois par jour, et la sortie part dès que le robot repart (D84). Aucun ordre stop n'est posé sur la plateforme.
+
+### Mode LIVE
+
+Les ordres LIVE ne viennent pas encore d'un appel API : ils viendront des signaux (étape 11). Le chemin est en place et testé avec une fausse plateforme : clés déchiffrées à chaque ordre (`getLiveCredentials`), recherche par `clientOrderId` avant toute création, réconciliation des exécutions partielles, erreurs de la plateforme réduites à des codes. Un ordre peut partir mais ne jamais se confirmer : il reste `SUBMITTED` et l'utilisateur est prévenu en critique de le vérifier sur sa plateforme.
+
+### File et jobs
+
+File `orders` : 5 essais, délai exponentiel (2, 4, 8, 16 s), un ordre à la fois. File `order-exits` : surveillance chaque minute. `BACKGROUND_JOBS_ENABLED=false` : les ordres s'exécutent dans la requête, sans nouvel essai, et la surveillance des sorties est inactive.
+
+**Journal d'audit** : `order.submitted`, `order.rejected` (`reason`), `order.filled`, `order.cancelled`, `order.failed`, `order.unsettled`, `order.exit_triggered`, `order.exit_skipped`, ainsi que les `portfolio.transaction_recorded` des deux jambes. Les clés d'échange n'y figurent jamais.
+
+**Vérifier sur un vrai Redis** : procédure de l'étape 6, puis déclarer 10 000 USDT, passer `POST /api/orders` d'achat de `0.005` BTC (le statut passe de `PENDING` à `FILLED`), relever le stop-loss au-dessus du prix (`update trade_logs set "stopLossPrice" = 9999999 where side = 'BUY'`) et ajouter un job `check` à la file `order-exits` : une vente `STOP_LOSS` apparaît, le portefeuille est soldé, une notification critique est créée, et un second passage ne vend pas une seconde fois.
+
+**Pas encore fait** : consommation des signaux (étape 11), **essai sur le testnet Binance** (aucun ordre réel n'a été passé), ordres stop natifs, réconciliation des soldes, passerelle Kraken.

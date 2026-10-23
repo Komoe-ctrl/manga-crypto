@@ -403,6 +403,63 @@ export class FakePrisma {
   tradeLog = {
     count: async ({ where }: Row) =>
       this.tradeLogs.filter((t) => matches(t, where)).length,
+    create: async ({ data }: Row) => {
+      if (this.tradeLogs.some((t) => t.clientOrderId === data.clientOrderId)) {
+        throw new Prisma.PrismaClientKnownRequestError(
+          'Unique constraint failed',
+          { code: 'P2002', clientVersion: 'test' },
+        );
+      }
+      const row = {
+        id: randomUUID(),
+        exchangeConfigId: null,
+        exchangeOrderId: null,
+        type: 'MARKET',
+        filledQuantity: new Prisma.Decimal(0),
+        price: null,
+        avgFillPrice: null,
+        fee: null,
+        feeCurrency: null,
+        stopLossPrice: null,
+        takeProfitPrice: null,
+        signalStreamId: null,
+        signalPayload: null,
+        failureReason: null,
+        origin: 'MANUAL',
+        parentOrderId: null,
+        exitTriggeredAt: null,
+        executedAt: null,
+        createdAt: this.tick(),
+        ...Object.fromEntries(
+          Object.entries(data).filter(([, v]) => v !== undefined),
+        ),
+      };
+      this.tradeLogs.push(row);
+      return { ...row };
+    },
+    findUnique: async ({ where }: Row) => {
+      const row = this.tradeLogs.find((t) => t.id === where.id);
+      return row ? { ...row } : null;
+    },
+    findFirst: async ({ where }: Row) => {
+      const row = this.tradeLogs.find((t) => matches(t, where));
+      return row ? { ...row } : null;
+    },
+    findMany: async ({ where, orderBy, take, select }: Row) =>
+      this.tradeLogs
+        .filter((t) => matches(t, where))
+        .sort((a, b) =>
+          orderBy?.createdAt === 'desc'
+            ? b.createdAt - a.createdAt
+            : a.createdAt - b.createdAt,
+        )
+        .slice(0, take)
+        .map((t) => pick({ ...t }, select)),
+    updateMany: async ({ where, data }: Row) => {
+      const rows = this.tradeLogs.filter((t) => matches(t, where));
+      rows.forEach((t) => Object.assign(t, data));
+      return { count: rows.length };
+    },
   };
 
   auditLog = {

@@ -10,7 +10,7 @@ import { AuditService } from '../audit/audit.service.js';
 import type { RequestContext } from '../auth/auth.service.js';
 import { EncryptionService } from '../crypto/encryption.service.js';
 import { Prisma } from '../generated/prisma/client.js';
-import { ExchangeStatus } from '../generated/prisma/enums.js';
+import { type Exchange, ExchangeStatus } from '../generated/prisma/enums.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type {
   CreateExchangeConfigDto,
@@ -253,6 +253,30 @@ export class ExchangesService {
       entityId: id,
       ...ctx,
     });
+  }
+
+  /**
+   * Clés de la configuration éligible au trading réel : active, vérifiée et hors testnet ; `null` s'il n'y en a pas.
+   * Appelée **à chaque ordre LIVE** (l'éligibilité n'est pas figée au passage en LIVE, voir D28). Réservée au module
+   * d'ordres ; le résultat ne doit jamais être journalisé, stocké ni renvoyé par l'API.
+   */
+  async getLiveCredentials(userId: string): Promise<{
+    configId: string;
+    exchange: Exchange;
+    apiKey: string;
+    apiSecret: string;
+  } | null> {
+    const row = await this.prisma.exchangeConfig.findFirst({
+      where: {
+        userId,
+        status: ExchangeStatus.ACTIVE,
+        sandbox: false,
+        verifiedAt: { not: null },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (!row) return null;
+    return { configId: row.id, exchange: row.exchange, ...this.decrypt(row) };
   }
 
   /** Appelle le vérificateur et traduit une indisponibilité en 503 (sans conclure sur la clé). */

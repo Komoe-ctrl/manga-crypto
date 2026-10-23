@@ -13,6 +13,7 @@ import { DigestsModule } from './digests/digests.module.js';
 import { ExchangesModule } from './exchanges/exchanges.module.js';
 import { AlertsEngineModule } from './notifications/engine/alerts-engine.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
+import { OrdersModule } from './orders/orders.module.js';
 import { PortfolioModule } from './portfolio/portfolio.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { QueueModule } from './queue/queue.module.js';
@@ -38,6 +39,7 @@ import { RiskModule } from './risk/risk.module.js';
     AlertsEngineModule.register(),
     DigestsModule,
     DigestEngineModule.register(),
+    OrdersModule.register(),
   ],
   controllers: [AppController],
   providers: [
