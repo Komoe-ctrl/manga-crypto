@@ -168,6 +168,37 @@ Le faux Prisma renvoyait d'abord la ligne elle-même ; une mise à jour la modif
 
 ---
 
+## Étape 6 — Pause automatique sur perte journalière
+
+### D40. Dépendances : `bullmq`, `@nestjs/bullmq` et `ioredis`
+BullMQ est dans la stack de la SPEC (section D) ; `@nestjs/bullmq` est son intégration Nest officielle (compatible Nest 12). **`ioredis`** est le client Redis dont BullMQ a besoin : il est déclaré « optionnel » côté BullMQ, mais **en ESM natif BullMQ ne peut pas le charger tout seul à partir d'options de connexion** (erreur au démarrage : *BullMQ could not load the optional 'ioredis' package*). Il faut lui passer un client `ioredis` déjà construit : c'est le rôle de `RedisConnection`, qui possède aussi sa fermeture à l'arrêt. Ce bug n'a été détecté que par un test sur un vrai Redis (D47), pas par les tests unitaires.
+
+### D41. Surveillance : job répétable toutes les 5 minutes, un utilisateur à la fois
+Un `upsertJobScheduler` (identifiant fixe `daily-loss-check`) programme le passage : redémarrer l'application ne crée pas de doublon. Le worker traite les utilisateurs actifs **séquentiellement** (`concurrency: 1`) et **isole les échecs** : une erreur chez un utilisateur est comptée et journalisée (nom de l'erreur seulement, jamais son message) sans empêcher la surveillance des autres. 5 minutes bornent le retard avec lequel une perte est détectée et celui de la valeur d'ouverture après minuit.
+
+### D42. Table `EquitySnapshot` : un instantané par utilisateur et par jour *local*
+Clé `(userId, localDate)` unique, `localDate` = `YYYY-MM-DD` dans le fuseau de l'utilisateur. Il garde la valeur d'ouverture et les **positions d'ouverture** (`[{ symbol, quantity, price }]` en chaînes décimales). Deux passages simultanés peuvent tenter de le créer : la contrainte unique protège, le perdant ignore l'erreur.
+
+### D43. La perte se mesure sur les positions d'**ouverture**, pas sur la valeur totale
+Perte = valeur d'ouverture − (quantités d'ouverture × prix courants). Comme les positions sont déclarées à la main (D32), comparer la valeur totale du portefeuille à celle d'ouverture déclencherait une pause à tort dès qu'on déclare une vente ou un retrait. Avec les positions d'ouverture, seule la variation de marché compte ; une position vendue depuis l'ouverture reste valorisée (ses prix sont toujours demandés). Le seuil est `RiskSettings.maxDailyLossPct`, égalité incluse.
+*Limites assumées :* (a) les pertes dues à des **ordres du robot** pendant la journée ne sont pas vues tant que les soldes ne sont pas lus sur la plateforme (module d'ordres) ; (b) la valeur d'ouverture est la **première observation du jour** : si l'application est arrêtée à minuit, une perte survenue avant la première observation n'est pas comptée.
+
+### D44. Pause jusqu'au prochain minuit local ; levée automatique
+`User.botPausedUntil` = premier instant du jour local suivant ; `TradingControlService.status()` la lit déjà (`PAUSED_DAILY_LOSS`). Il n'y a **pas** de bouton « reprendre » : contourner la limite le jour même irait contre son objet (le kill switch et le retour en PAPER restent disponibles). Pas de re-déclenchement ni de nouvel audit si la pause est déjà active.
+`local-day.ts` calcule la date locale et le prochain minuit avec `Intl` : jours de 23 h et 25 h (changement d'heure), fuseaux à demi-heure (Inde) ou +14 h (Kiritimati) sont testés ; une année entière est balayée pour six fuseaux. Les `Intl.DateTimeFormat` sont mis en cache par fuseau (leur création coûte environ 1 ms).
+
+### D45. On ne conclut jamais sur des prix incomplets
+Source de prix injoignable, prix manquant pour une position actuelle ou d'ouverture → résultat `no_prices`, **aucun instantané partiel, aucune pause** (applique D38). Portefeuille vide → rien à surveiller.
+
+### D46. L'alerte critique est reportée au module de notifications
+Le centre de notifications (module 3 de la SPEC) n'existe pas encore. La pause écrit l'audit `risk.daily_loss_paused` (valeur d'ouverture, valeur courante, perte en %, seuil, fin de pause) et un log d'avertissement ; un `TODO` marque le point où brancher l'alerte critique, qui devra passer **même en Mode Nuit** (SPEC 3).
+
+### D47. `RISK_MONITOR_ENABLED=false` pour les tests ; vérification sur un vrai Redis
+Les tests n'ouvrent jamais de connexion Redis : `RISK_MONITOR_ENABLED=false` est posé par la configuration Vitest et le module ne s'enregistre pas (`RiskMonitorModule.register()`). Le câblage réel a été vérifié à part, sur une **base PostgreSQL temporaire** et la base Redis n° 9 (toutes deux supprimées ensuite) : démarrage, programmation du job, création de l'instantané avec les vrais prix de Binance, pause simulée par une valeur d'ouverture gonflée, absence de doublon au passage suivant. C'est cette vérification qui a révélé le défaut de D40.
+Le délai par défaut des tests **unitaires** passe aussi à 20 s (comme l'e2e, D31) : les tests de services enchaînent des hachages argon2 pendant que les fichiers tournent en parallèle.
+
+---
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
@@ -178,7 +209,10 @@ Le faux Prisma renvoyait d'abord la ligne elle-même ; une mise à jour la modif
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
-| Pause automatique sur perte journalière | Voir D30. Le portefeuille et `totalValue()` existent (étape 5) ; manque la **valeur d'ouverture du jour** : table d'instantanés d'équité + planificateur (BullMQ) qui l'enregistre au début de la journée de chaque utilisateur (fuseau `User.timezone`) et surveille la perte. |
+| Alerte critique à la pause | Voir D46 : brancher le centre de notifications (module 3), même en Mode Nuit. |
+| Pertes dues aux ordres du robot dans la perte journalière | Voir D43 : nécessite la lecture des soldes sur la plateforme (module d'ordres). |
+| Tests d'intégration automatisés avec Redis et PostgreSQL | Voir D47 : la vérification sur un vrai Redis est aujourd'hui manuelle ; elle a trouvé un défaut que les tests unitaires ne pouvaient pas voir. |
+| Purge des instantanés d'équité anciens | La table grossit d'une ligne par utilisateur et par jour. |
 | Historique des transactions et P&L réalisé | Voir D33 : le gain réalisé n'est qu'audité, pas stocké ni agrégé. |
 | Synchronisation des soldes avec la plateforme | Voir D32 : avec le module d'ordres (`ccxt`). |
 | Source de prix : cache Redis | Voir D36 : remplace l'appel direct à l'API publique. |

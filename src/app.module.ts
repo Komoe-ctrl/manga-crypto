@@ -11,6 +11,7 @@ import { CryptoModule } from './crypto/crypto.module.js';
 import { ExchangesModule } from './exchanges/exchanges.module.js';
 import { PortfolioModule } from './portfolio/portfolio.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { RiskMonitorModule } from './risk/monitor/risk-monitor.module.js';
 import { RiskModule } from './risk/risk.module.js';
 
 @Module({
@@ -25,6 +26,7 @@ import { RiskModule } from './risk/risk.module.js';
     ExchangesModule,
     RiskModule,
     PortfolioModule,
+    RiskMonitorModule.register(),
   ],
   controllers: [AppController],
   providers: [
