@@ -97,6 +97,53 @@ export class FakePrisma {
     },
   };
 
+  assets: Row[] = [];
+  private clock = Date.now();
+  /** Horloge strictement croissante : deux écritures successives ont toujours un `updatedAt` différent. */
+  private tick = () => new Date(++this.clock);
+
+  asset = {
+    // Comme Prisma, renvoie des copies : une mise à jour ultérieure ne modifie pas ce que l'appelant a lu.
+    findUnique: async ({ where }: Row) => {
+      const row = this.assets.find(
+        (a) =>
+          a.userId === where.userId_symbol.userId &&
+          a.symbol === where.userId_symbol.symbol,
+      );
+      return row ? { ...row } : null;
+    },
+    findMany: async ({ where }: Row) =>
+      this.assets
+        .filter((a) => matches(a, where))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol))
+        .map((a) => ({ ...a })),
+    create: async ({ data }: Row) => {
+      if (
+        this.assets.some(
+          (a) => a.userId === data.userId && a.symbol === data.symbol,
+        )
+      ) {
+        throw new Prisma.PrismaClientKnownRequestError(
+          'Unique constraint failed',
+          { code: 'P2002', clientVersion: 'test' },
+        );
+      }
+      const row = { id: randomUUID(), updatedAt: this.tick(), ...data };
+      this.assets.push(row);
+      return row;
+    },
+    updateMany: async ({ where, data }: Row) => {
+      const rows = this.assets.filter((a) => matches(a, where));
+      rows.forEach((a) => Object.assign(a, data, { updatedAt: this.tick() }));
+      return { count: rows.length };
+    },
+    deleteMany: async ({ where }: Row) => {
+      const rows = this.assets.filter((a) => matches(a, where));
+      this.assets = this.assets.filter((a) => !rows.includes(a));
+      return { count: rows.length };
+    },
+  };
+
   exchangeConfigs: Row[] = [];
   tradeLogs: Row[] = [];
 
@@ -151,9 +198,11 @@ export class FakePrisma {
 function matches(row: Row, where: Row): boolean {
   return Object.entries(where).every(([key, value]) =>
     // Seul l'opérateur `{ not: null }` est géré, avec l'égalité simple.
-    value !== null && typeof value === 'object' && 'not' in value
-      ? row[key] !== value.not
-      : row[key] === value,
+    value instanceof Date
+      ? row[key] instanceof Date && row[key].getTime() === value.getTime()
+      : value !== null && typeof value === 'object' && 'not' in value
+        ? row[key] !== value.not
+        : row[key] === value,
   );
 }
 

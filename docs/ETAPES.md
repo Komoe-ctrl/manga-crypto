@@ -137,3 +137,36 @@ const { stopLoss, takeProfit } = stopLossTakeProfit('BUY', entryPrice, settings.
 ```
 
 **Pas encore fait** : pause automatique sur perte journalière (D30), contrôle d'éligibilité LIVE à chaque ordre (D28).
+
+## Étape 5 — Portefeuille et valorisation
+
+**Livré** : `src/portfolio/` (`portfolio-math.ts`, `PortfolioService`, `PortfolioValuationService`, `PriceProvider`, contrôleur, DTO). Pas de migration. Aucune dépendance ajoutée.
+
+| Route | Effet |
+|---|---|
+| `GET /api/portfolio` | Positions valorisées en USD : prix courant, valeur, P&L, poids, totaux, `complete` |
+| `POST /api/portfolio/transactions` | Achat ou vente déclaré ; renvoie la position après transaction et le gain réalisé (vente) ; 422 si vente > quantité détenue |
+| `PUT /api/portfolio/assets/:symbol` | Définit une position (import, correction) |
+| `DELETE /api/portfolio/assets/:symbol` | Supprime une position ; 404 si absente |
+
+Quantités et prix : **chaînes décimales** strictement positives (`"0.015"`), jamais des nombres JSON (D34). Les symboles sont normalisés en majuscules (`btc` → `BTC`), 2 à 12 caractères alphanumériques.
+
+```json
+POST /api/portfolio/transactions
+{ "symbol": "BTC", "side": "BUY", "quantity": "0.5", "price": "60000" }
+→ 200 { "holding": { "symbol": "BTC", "quantity": "0.5", "avgBuyPrice": "60000" }, "realizedPnl": null }
+
+GET /api/portfolio
+→ { "currency": "USD", "totalValue": "35000", "totalPnl": "5000", "totalPnlPct": "16.67", "complete": true,
+    "assets": [{ "symbol": "BTC", "currentPrice": "70000", "value": "35000", "pnlPct": "16.67", "weightPct": "100", … }] }
+```
+
+**Erreurs à connaître** : `409` « modifiée en parallèle, réessayez » (écriture simultanée, D35) ; `complete: false` avec des valeurs `null` (prix indisponibles, D37).
+
+**Journal d'audit** : `portfolio.transaction_recorded` (symbole, sens, quantité, prix, gain réalisé), `portfolio.asset_set` (ancienne et nouvelle valeur), `portfolio.asset_removed`.
+
+**Remplacer la source de prix** : implémenter `PriceProvider.getPrices(symbols)` (renvoyer `Map<symbole, Decimal | null>`, lever `PriceUnavailableError` si la source est injoignable) et changer le `useClass` dans `PortfolioModule`.
+
+**Pour la pause sur perte journalière** : `PortfolioValuationService.totalValue(userId)` renvoie la valeur totale, ou `null` si une position n'a pas pu être valorisée (D38).
+
+**Pas encore fait** : valeur d'ouverture du jour et pause automatique (nécessitent instantanés d'équité et planificateur), historique des transactions, synchronisation avec les soldes de la plateforme, cache Redis des prix.
