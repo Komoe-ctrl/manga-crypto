@@ -1,0 +1,12 @@
+// Schéma Prisma — crypto-api
+// Les modèles sont à générer à l'étape 1 (voir docs/SPEC.md, section 7).
+// Rappel : montants et quantités en Decimal, jamais en Float.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
