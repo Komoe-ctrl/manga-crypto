@@ -3,7 +3,12 @@ import { TelegramSender } from './telegram.sender.js';
 
 const TOKEN = '123456:SECRET-bot-token';
 const message = { title: 'Titre', body: 'Corps', critical: false };
-const recipient = { telegramChatId: '987654', email: 'a@example.com' };
+const recipient = {
+  userId: 'u1',
+  telegramChatId: '987654',
+  email: 'a@example.com',
+  pushSubscriptions: [],
+};
 const sender = (env: Record<string, string> = { TELEGRAM_BOT_TOKEN: TOKEN }) =>
   new TelegramSender(new ConfigService(env));
 

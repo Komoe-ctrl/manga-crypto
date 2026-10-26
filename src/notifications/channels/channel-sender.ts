@@ -1,4 +1,5 @@
 import type { NotificationChannel } from '../../generated/prisma/enums.js';
+import type { PushSubscriptionRecord } from '../push/push-subscription.js';
 
 export interface ChannelMessage {
   title: string;
@@ -7,8 +8,11 @@ export interface ChannelMessage {
 }
 
 export interface ChannelRecipient {
+  userId: string;
   telegramChatId: string | null;
   email: string;
+  /** Appareils abonnés au Web Push (vide si aucun). */
+  pushSubscriptions: PushSubscriptionRecord[];
 }
 
 /** Résultat d'envoi sur un canal ; `reason` est un code court, jamais un message de la plateforme (il pourrait contenir un secret). */

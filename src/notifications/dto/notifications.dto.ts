@@ -2,15 +2,19 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
+  IsDefined,
   IsEmail,
   IsEnum,
   IsInt,
   IsISO8601,
+  IsNumber,
   IsOptional,
+  IsString,
   Matches,
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import {
   NotificationChannel,
@@ -103,7 +107,7 @@ export class DeliveryDto {
   @ApiProperty({ enum: ['SENT', 'FAILED'] }) status: string;
   @ApiPropertyOptional({
     description:
-      "Code court de l'échec (ex. telegram_not_configured, channel_not_implemented)",
+      "Code court de l'échec (ex. telegram_not_configured, push_no_subscription, email_unreachable)",
   })
   reason?: string;
 }
@@ -158,4 +162,66 @@ export class ListNotificationsQuery {
   @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
   unread?: boolean;
+}
+
+/** Clés de l'abonnement, telles que `PushSubscription.toJSON()` les donne (base64url sans remplissage). */
+export class PushKeysDto {
+  @ApiProperty({
+    description: 'Clé publique du navigateur (65 octets en base64url)',
+  })
+  @Matches(/^[A-Za-z0-9_-]{80,100}$/, { message: 'p256dh invalide' })
+  p256dh: string;
+
+  @ApiProperty({
+    description: "Secret d'authentification (16 octets en base64url)",
+  })
+  @Matches(/^[A-Za-z0-9_-]{16,32}$/, { message: 'auth invalide' })
+  auth: string;
+}
+
+/** Corps de `PushSubscription.toJSON()` : `expirationTime` est accepté et ignoré. */
+export class PushSubscriptionDto {
+  @ApiProperty({
+    description: 'Adresse du service Push du navigateur (https, service connu)',
+  })
+  @IsString()
+  @MaxLength(2048)
+  endpoint: string;
+
+  @ApiPropertyOptional({ nullable: true, type: Number, description: 'Ignoré' })
+  @IsOptional()
+  @IsNumber()
+  expirationTime?: number | null;
+
+  @ApiProperty({ type: PushKeysDto })
+  // Sans IsDefined, ValidateNested laisse passer une propriété absente : erreur 500 au lieu de 400.
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => PushKeysDto)
+  keys: PushKeysDto;
+}
+
+export class RemovePushSubscriptionDto {
+  @ApiProperty({ description: "Adresse de l'abonnement à retirer" })
+  @IsString()
+  @MaxLength(2048)
+  endpoint: string;
+}
+
+export class PushStatusDto {
+  @ApiProperty({
+    description: 'Le serveur a des clés VAPID : le Push peut fonctionner',
+  })
+  configured: boolean;
+
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    description:
+      'Clé publique VAPID à donner à PushManager.subscribe (non secrète)',
+  })
+  publicKey: string | null;
+
+  @ApiProperty({ description: "Nombre d'appareils abonnés (5 au plus)" })
+  subscriptions: number;
 }
