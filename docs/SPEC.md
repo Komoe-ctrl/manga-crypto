@@ -156,6 +156,7 @@ Les champs inconnus sont ignorés (évolution compatible). Un message invalide (
 - Publier avec `XADD signals MAXLEN ~ 10000 * data '<json>'` (le moteur borne la taille du stream).
 - Un `id` par signal, jamais réutilisé pour un autre signal ; republier un signal avec le même `id` est sans effet.
 - Ne pas supposer de réponse : l'API ne répond pas au moteur.
+- **L'API ne consomme ces signaux que si `SIGNALS_ENABLED=true`**, et ne passe aucun ordre LIVE à partir d'eux sans `SIGNALS_ALLOW_LIVE=true` (le backtest du moteur n'a démontré aucun avantage de sa stratégie ; voir `docs/DECISIONS.md`, D114).
 - Implémentation de référence : `crypto-engine` (identifiant `SYMBOLE-1h-<ouverture de la bougie en ms>-ACTION`, signal publié seulement quand la position recommandée change, après confirmation de plusieurs bougies fermées ; voir son `docs/FONCTIONNEMENT.md`).
 
 

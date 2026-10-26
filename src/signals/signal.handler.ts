@@ -5,6 +5,7 @@ import {
   OrderOrigin,
   OrderSide,
   OrderStatus,
+  TradingMode,
 } from '../generated/prisma/enums.js';
 import { STABLECOINS } from '../orders/order-rules.js';
 import { OrdersService } from '../orders/orders.service.js';
@@ -29,6 +30,11 @@ export interface SignalSettings {
   maxAgeMs: number;
   /** Un achat est ignoré si le prix a bougé de plus de ce pourcentage depuis l'analyse. */
   maxPriceDriftPct: number;
+  /**
+   * Des ordres LIVE peuvent-ils venir d'un signal ? Non par défaut : le backtest du moteur n'a démontré aucun
+   * avantage (voir D114). Seule la valeur exacte `true` active (toute autre valeur : non).
+   */
+  allowLive: boolean;
 }
 
 /** Ce qui est arrivé à un signal pour un utilisateur. */
@@ -36,6 +42,7 @@ export type SignalOutcome =
   | 'submitted' // ordre créé (il peut ensuite être refusé ou exécuté : voir l'ordre)
   | 'rejected' // ordre créé mais refusé par un garde-fou (enregistré avec son motif)
   | 'duplicate' // ce signal a déjà donné lieu à un ordre pour cet utilisateur
+  | 'live_not_allowed' // utilisateur en mode LIVE et SIGNALS_ALLOW_LIVE n'est pas activé : aucun ordre
   | 'robot_blocked' // kill switch ou pause : aucun ordre
   | 'no_position' // vente demandée sans position
   | 'price_drift' // le prix a trop bougé depuis l'analyse
@@ -60,6 +67,7 @@ const DEFAULTS: SignalSettings = {
   minScore: 0.6,
   maxAgeMs: 5 * 60_000,
   maxPriceDriftPct: 2,
+  allowLive: false,
 };
 
 /**
@@ -102,6 +110,7 @@ export class SignalHandler {
         DEFAULTS.maxPriceDriftPct,
         (n) => n > 0,
       ),
+      allowLive: config.get('SIGNALS_ALLOW_LIVE') === 'true',
     };
   }
 
@@ -173,9 +182,14 @@ export class SignalHandler {
     });
     if (done) return 'duplicate';
 
+    const status = await this.control.status(userId);
+    // Verrou de politique, indépendant des garde-fous : un signal ne déclenche pas d'ordre réel sans choix explicite.
+    // Comme pour le robot arrêté, on n'enregistre pas d'ordre refusé : ce serait du bruit à chaque signal.
+    if (status.tradingMode === TradingMode.LIVE && !this.settings.allowLive)
+      return 'live_not_allowed';
     // Un signal n'est pas une intention de l'utilisateur : quand le robot est arrêté ou en pause, on n'enregistre
     // pas d'ordre refusé pour chaque signal (ce serait du bruit) ; le signal est simplement ignoré.
-    if (!(await this.control.status(userId)).canTrade) return 'robot_blocked';
+    if (!status.canTrade) return 'robot_blocked';
 
     const price = await this.currentPrice(signal.symbol);
     if (!price) return 'price_unavailable';
