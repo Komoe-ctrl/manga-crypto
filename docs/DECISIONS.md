@@ -455,7 +455,7 @@ Avec `dist/main.js` (donc le vrai `main.ts`, que les tests e2e ne passent pas) e
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
-| **Émission des signaux par `crypto-engine`** | Le moteur doit publier selon `docs/SPEC.md` section 7 (D88) ; il n'émet encore rien. Rouvrir D83 si l'on veut des ordres manuels en LIVE. |
+| Backtest de la stratégie du moteur | Le moteur publie ses signaux depuis l'étape 13 (dépôt `crypto-engine`, `docs/DECISIONS.md` E1 à E13), mais sa stratégie n'a jamais été éprouvée sur l'historique : à faire avant tout usage LIVE. Rouvrir D83 si l'on veut des ordres manuels en LIVE. |
 | Réglages de signaux par utilisateur | Voir D90 et D96 : seuil de score, écart de prix, péremption sont globaux (variables d'environnement). |
 | Essai sur le testnet Binance | Voir D87 : aucun ordre réel n'a été passé. À faire avec une clé testnet dédiée (jamais dans git) avant tout usage LIVE ; le testnet n'expose pas `apiRestrictions` (D20), la configuration devra être étendue aux ordres testnet. |
 | Ordres stop natifs sur la plateforme | Voir D84 : la protection actuelle est un contrôle par minute, sans effet si l'application est arrêtée ; un ordre stop posé côté plateforme protégerait aussi pendant une panne. |
