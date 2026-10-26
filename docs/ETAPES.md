@@ -485,3 +485,73 @@ Options : `--symbol`, `--action`, `--score`, `--price`, `--reason`, `--id`, `--t
 - **Un signal n'a pas donné d'ordre** : chercher son `id` dans les journaux (résultat par utilisateur) puis dans `GET /api/orders` (`signalStreamId`).
 
 **Pas encore fait** : émission des signaux par `crypto-engine`, réglages par utilisateur, essai sur le testnet Binance (l'ordre LIVE réel reste jamais exercé, voir étape 10).
+
+
+---
+
+## Étape 12 — WebSocket vers le front
+
+**Livré** : l'API pousse en temps réel à crypto-web l'évolution des ordres, l'état du robot et les nouvelles notifications. Le contrat des messages est dans `docs/SPEC.md` section 8 ; les choix sont dans `docs/DECISIONS.md` (D97 à D105).
+
+### Fonctionnement
+
+| Élément | Rôle |
+|---|---|
+| `GET ws://<hôte>/api/ws` | Connexion WebSocket ; le client envoie `auth` en premier message |
+| `RealtimeGateway` | Transport (adaptateur `ws`), un seul message client accepté : `auth` |
+| `RealtimeHub` | Authentification, une liste de connexions par utilisateur, limites, ping/pong |
+| `RealtimeBus` | Bus interne ; les services y publient, sans connaître le WebSocket |
+| `order-view.ts` | Vue d'un ordre (partagée par l'API REST et le WebSocket) |
+
+Qui publie quoi :
+
+| Événement | Publié par | Quand |
+|---|---|---|
+| `order` | `OrdersService` | Ordre créé (`PENDING` ou `REJECTED`), annulé |
+| `order` | `OrderExecutor` | Pris en charge (`SUBMITTED`), exécuté, refusé, abandonné |
+| `risk` | `TradingControlService` | Kill switch, passage LIVE ou PAPER |
+| `risk` | `DailyLossMonitor` | Robot mis en pause sur perte journalière |
+| `notification` | `NotificationService` | Chaque notification enregistrée (Mode Nuit compris) |
+
+### Réglages (variables d'environnement, facultatives)
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `REALTIME_AUTH_TIMEOUT_MS` | `5000` | Délai pour envoyer `auth` avant fermeture (4408) |
+| `REALTIME_MAX_CONNECTIONS_PER_USER` | `5` | Connexions simultanées par utilisateur (4429 au-delà) |
+
+Le ping (30 s) et la taille maximale d'un message client (4 Ko) sont fixes.
+
+### Essayer
+
+```bash
+npm run start:dev
+# Console du navigateur, avec un jeton obtenu par POST /api/auth/login :
+const ws = new WebSocket('ws://localhost:3001/api/ws');
+ws.onmessage = (e) => console.log(e.data);
+ws.onopen = () => ws.send(JSON.stringify({ event: 'auth', data: { token: '<accessToken>' } }));
+# Puis, depuis Swagger (http://localhost:3001/docs) : passer un ordre, activer le kill switch, envoyer une notification de test.
+```
+
+### Codes de fermeture
+
+| Code | Motif | Que faire côté front |
+|---|---|---|
+| 4401 | Jeton absent, invalide, expiré ou compte désactivé | Rafraîchir le jeton (`/api/auth/refresh`), puis se reconnecter |
+| 4408 | Pas de `auth` dans le délai | Se reconnecter et envoyer `auth` tout de suite |
+| 4429 | Trop de connexions pour cet utilisateur | Fermer les onglets en trop |
+| 1009 | Message trop gros | Bug du client |
+| 1001 | Arrêt du serveur | Se reconnecter avec un délai croissant |
+
+### À savoir
+
+- **Aucun rejeu** : après chaque connexion ou reconnexion, relire l'état par l'API REST (`GET /api/orders`, `/api/notifications`, `/api/risk/status`), puis s'appuyer sur les événements.
+- **Une instance de l'API** : voir D105 (Redis pub/sub si plusieurs instances).
+- **Pas d'événement de valorisation** : relire `GET /api/portfolio` sur un événement `order` (D100).
+- **Le front doit renvoyer `auth` avec le nouveau jeton avant l'échéance** (la date est dans `ready.data.expiresAt`) pour garder la connexion ; sinon elle est coupée à l'expiration et il se reconnecte.
+
+### Vérifications
+
+`npm run typecheck`, `npm test` (unitaires du hub et du bus), `npm run test:e2e` (nouveau fichier `test/realtime.e2e-spec.ts` avec un vrai client `ws` : authentification, refus, délai, message trop gros, ordre de bout en bout, kill switch, notification, cloisonnement entre deux comptes), `npm run lint` : OK. Vérification manuelle sur l'application complète : voir D104.
+
+**Pas encore fait** : Push et Email (en attente de `web-push` et `nodemailer`), plusieurs instances (Redis pub/sub), émission des signaux par `crypto-engine`.

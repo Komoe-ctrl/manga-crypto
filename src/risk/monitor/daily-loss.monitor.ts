@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service.js';
 import { NotificationService } from '../../notifications/notification.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
@@ -8,6 +8,7 @@ import {
   PriceUnavailableError,
 } from '../../portfolio/price/price-provider.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { RealtimeBus } from '../../realtime/realtime-events.js';
 import { dailyLossBreached, type DecimalInput } from '../risk-rules.js';
 import {
   lossPct,
@@ -41,6 +42,7 @@ export class DailyLossMonitor {
     private readonly prices: PriceProvider,
     private readonly audit: AuditService,
     private readonly notifications: NotificationService,
+    @Optional() private readonly realtime?: RealtimeBus,
   ) {}
 
   async checkUser(
@@ -49,7 +51,13 @@ export class DailyLossMonitor {
   ): Promise<DailyLossOutcome> {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, deletedAt: null },
-      select: { id: true, timezone: true, botPausedUntil: true },
+      select: {
+        id: true,
+        timezone: true,
+        botPausedUntil: true,
+        tradingMode: true,
+        killSwitchActive: true,
+      },
     });
     if (!user) return 'skipped';
 
@@ -115,6 +123,18 @@ export class DailyLossMonitor {
         lossPct: lossPct(openEquity, current).toFixed(),
         maxDailyLossPct: new Prisma.Decimal(settings.maxDailyLossPct).toFixed(),
         pausedUntil: pausedUntil.toISOString(),
+      },
+    });
+    this.realtime?.publish(userId, {
+      type: 'risk',
+      data: {
+        tradingMode: user.tradingMode,
+        killSwitchActive: user.killSwitchActive,
+        botPausedUntil: pausedUntil,
+        canTrade: false,
+        blockedReason: user.killSwitchActive
+          ? 'KILL_SWITCH'
+          : 'PAUSED_DAILY_LOSS',
       },
     });
     this.logger.warn(

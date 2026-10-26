@@ -8,6 +8,8 @@ const ALGORITHM = 'HS256';
 
 export interface AccessTokenPayload {
   sub: string;
+  /** Expiration (secondes Unix), posée par la signature ; la passerelle WebSocket coupe la connexion à cette date. */
+  exp?: number;
 }
 
 /** Access tokens JWT (courts, sans état) et refresh tokens opaques (longs, stockés hachés en base). */
