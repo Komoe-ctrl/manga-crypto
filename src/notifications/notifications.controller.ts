@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   NotFoundException,
@@ -8,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
 } from '@nestjs/common';
@@ -21,10 +23,14 @@ import {
   NotificationDto,
   NotificationListDto,
   NotificationSettingsDto,
+  PushStatusDto,
+  PushSubscriptionDto,
+  RemovePushSubscriptionDto,
   UpdateNotificationSettingsDto,
 } from './dto/notifications.dto.js';
 import { NotificationSettingsService } from './notification-settings.service.js';
 import { NotificationService } from './notification.service.js';
+import { PushSubscriptionService } from './push/push-subscription.service.js';
 
 /** Le message de test appelle un service externe : 3 par minute et par IP. */
 const TEST_LIMIT = { default: { limit: 3, ttl: 60_000 } };
@@ -36,6 +42,7 @@ export class NotificationsController {
   constructor(
     private readonly notifications: NotificationService,
     private readonly settings: NotificationSettingsService,
+    private readonly push: PushSubscriptionService,
   ) {}
 
   @Get('settings')
@@ -52,6 +59,39 @@ export class NotificationsController {
     @Req() req: Request,
   ) {
     return this.settings.update(user.id, dto, context(req));
+  }
+
+  /** État du Web Push : serveur configuré, clé publique VAPID à donner au navigateur, nombre d'appareils. */
+  @Get('push')
+  @ApiOkResponse({ type: PushStatusDto })
+  pushStatus(@CurrentUser() user: AuthUser) {
+    return this.push.status(user.id);
+  }
+
+  /** Abonne un appareil (corps de `PushSubscription.toJSON()`). Remplace l'abonnement de même adresse ; 5 appareils au plus. */
+  @Put('push/subscription')
+  @ApiOkResponse({ type: PushStatusDto })
+  addPushSubscription(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: PushSubscriptionDto,
+    @Req() req: Request,
+  ) {
+    return this.push.add(
+      user.id,
+      { endpoint: dto.endpoint, p256dh: dto.keys.p256dh, auth: dto.keys.auth },
+      context(req),
+    );
+  }
+
+  /** Retire un appareil. Idempotent. */
+  @Delete('push/subscription')
+  @ApiOkResponse({ type: PushStatusDto })
+  removePushSubscription(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: RemovePushSubscriptionDto,
+    @Req() req: Request,
+  ) {
+    return this.push.remove(user.id, dto.endpoint, context(req));
   }
 
   /** Boîte de réception : les plus récentes d'abord, avec le nombre de non lues. */

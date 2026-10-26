@@ -1,14 +1,17 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { NotificationChannel } from '../generated/prisma/enums.js';
 import { AlertsController } from './alerts.controller.js';
 import { AlertsService } from './alerts.service.js';
 import { CHANNEL_SENDERS } from './channels/channel-sender.js';
 import { TelegramSender } from './channels/telegram.sender.js';
-import { UnavailableSender } from './channels/unavailable.sender.js';
+import { EmailSender } from './email/email.sender.js';
+import { MailTransport, NodemailerTransport } from './email/mail-transport.js';
 import { NotificationSettingsService } from './notification-settings.service.js';
 import { NotificationService } from './notification.service.js';
 import { NotificationsController } from './notifications.controller.js';
+import { PushSender } from './push/push.sender.js';
+import { PushSubscriptionService } from './push/push-subscription.service.js';
+import { LibraryWebPushClient, WebPushClient } from './push/web-push.client.js';
 
 @Module({
   controllers: [NotificationsController, AlertsController],
@@ -16,14 +19,26 @@ import { NotificationsController } from './notifications.controller.js';
     NotificationService,
     NotificationSettingsService,
     AlertsService,
+    PushSubscriptionService,
+    { provide: WebPushClient, useClass: LibraryWebPushClient },
+    { provide: MailTransport, useClass: NodemailerTransport },
     {
       provide: CHANNEL_SENDERS,
-      inject: [ConfigService],
-      // Push et Email : en attente d'une dépendance validée (web-push, nodemailer).
-      useFactory: (config: ConfigService) => [
+      inject: [
+        ConfigService,
+        WebPushClient,
+        PushSubscriptionService,
+        MailTransport,
+      ],
+      useFactory: (
+        config: ConfigService,
+        webPush: WebPushClient,
+        subscriptions: PushSubscriptionService,
+        mail: MailTransport,
+      ) => [
         new TelegramSender(config),
-        new UnavailableSender(NotificationChannel.PUSH),
-        new UnavailableSender(NotificationChannel.EMAIL),
+        new PushSender(config, webPush, subscriptions),
+        new EmailSender(config, mail),
       ],
     },
   ],

@@ -75,7 +75,12 @@ describe('NotificationService', () => {
       ]);
       expect(senders[1].send).toHaveBeenCalledWith(
         { title: 'Titre', body: 'Corps', critical: false },
-        { telegramChatId: '42', email: 'a@example.com' },
+        {
+          userId,
+          telegramChatId: '42',
+          email: 'a@example.com',
+          pushSubscriptions: [],
+        },
       );
     });
 

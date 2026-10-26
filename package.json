@@ -25,7 +25,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "signals:publish": "node scripts/publish-signal.mjs"
+    "signals:publish": "node scripts/publish-signal.mjs",
+    "vapid:generate": "node scripts/generate-vapid-keys.mjs"
   },
   "dependencies": {
     "@nestjs/bullmq": "^12.0.0",
@@ -47,9 +48,11 @@
     "class-validator": "^0.15.1",
     "dotenv": "^18.0.9",
     "ioredis": "^6.0.0",
+    "nodemailer": "^10.2.1",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "web-push": "^3.6.7",
     "ws": "^8.22.0"
   },
   "devDependencies": {
@@ -58,8 +61,10 @@
     "@nestjs/testing": "^12.0.1",
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.0.0",
+    "@types/web-push": "^3.6.4",
     "@types/ws": "^8.18.2",
     "@vitest/coverage-v8": "^4.1.2",
     "oxlint": "^1.58.0",

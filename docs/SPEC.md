@@ -195,3 +195,48 @@ L'API pousse à crypto-web les changements d'état ; le WebSocket **n'envoie que
 - **Pas de rejeu** : un événement émis pendant une déconnexion est perdu. À chaque (re)connexion, relire l'état par l'API REST, puis s'appuyer sur les événements.
 - Reconnexion avec un délai croissant ; après 4401, rafraîchir le jeton d'abord.
 - Les événements sont des **signaux de mise à jour** : en cas de doute, relire la ressource par l'API (l'état du portefeuille, par exemple, se relit sur un événement `order`).
+
+---
+
+## 9. NOTIFICATIONS PUSH ET EMAIL (contrat pour le front)
+
+Les notifications sortent de la boîte de réception par Web Push, email et Telegram, selon les canaux activés dans `PATCH /api/notifications/settings` (`pushEnabled`, `emailEnabled`, `telegramEnabled`, `notificationEmail`). Le Mode Nuit retient les notifications non critiques ; une critique passe toujours.
+
+### S'abonner au Push (côté navigateur)
+
+1. `GET /api/notifications/push` renvoie `{ configured, publicKey, subscriptions }`. Si `configured` est faux, ne pas proposer le Push.
+2. Enregistrer un **service worker** (HTTPS obligatoire, `localhost` accepté), demander la permission (`Notification.requestPermission()`), puis :
+   ```js
+   const registration = await navigator.serviceWorker.register('/sw.js');
+   const subscription = await registration.pushManager.subscribe({
+     userVisibleOnly: true,
+     applicationServerKey: publicKey, // la clé publique VAPID reçue à l'étape 1
+   });
+   ```
+3. Envoyer l'abonnement tel quel : `PUT /api/notifications/push/subscription` avec `subscription.toJSON()` (le champ `expirationTime` est accepté et ignoré). Réponse : `{ configured, publicKey, subscriptions }`.
+4. Se désabonner : `DELETE /api/notifications/push/subscription` avec `{ "endpoint": subscription.endpoint }`, puis `subscription.unsubscribe()`.
+
+Règles : **5 appareils au plus** par utilisateur (le plus ancien est écarté au sixième) ; une adresse qui n'est pas un service Push de navigateur connu est refusée en **422** ; un abonnement révoqué par le navigateur est retiré par le serveur (`subscriptions` diminue) : à la reconnexion, si `subscriptions` vaut 0 alors que l'utilisateur a activé le Push, se réabonner.
+
+### Ce que reçoit le service worker
+
+Un message JSON `{ "title": string, "body": string, "critical": boolean }` :
+
+```js
+self.addEventListener('push', (event) => {
+  const { title, body, critical } = event.data.json();
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      requireInteraction: critical, // une alerte critique reste affichée jusqu'à ce qu'on la ferme
+      tag: critical ? 'veille-critique' : 'veille',
+    }),
+  );
+});
+```
+
+Un message critique est conservé 24 h par le service Push si l'appareil est éteint ; un autre, 1 h. Sur iPhone, Safari n'envoie des notifications Push qu'à un site **installé sur l'écran d'accueil**.
+
+### Email
+
+Texte brut, sans HTML ni lien de désabonnement. Destinataire : `notificationEmail` s'il est défini, sinon l'adresse du compte. `POST /api/notifications/test` envoie un message de test sur les canaux activés ; le détail par canal est dans `deliveries` (`{ channel, status: "SENT" | "FAILED", reason? }`, codes dans `docs/ETAPES.md`, étape 15).

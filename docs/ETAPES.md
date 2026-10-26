@@ -247,7 +247,7 @@ POST /api/alerts
 
 ### Lire le résultat d'une livraison
 
-`deliveries` (dans chaque notification) liste un résultat par canal activé : `{ "channel": "TELEGRAM", "status": "SENT" }` ou `{ "channel": "PUSH", "status": "FAILED", "reason": "channel_not_implemented" }`.
+`deliveries` (dans chaque notification) liste un résultat par canal activé : `{ "channel": "TELEGRAM", "status": "SENT" }` ou `{ "channel": "PUSH", "status": "FAILED", "reason": "push_not_configured" }`.
 
 | `reason` | Signification |
 |---|---|
@@ -255,7 +255,7 @@ POST /api/alerts
 | `telegram_no_chat` | `telegramChatId` non renseigné |
 | `telegram_http_<statut>` | Telegram a refusé (401 : jeton invalide ; 400/403 : conversation inconnue ou bot bloqué) |
 | `telegram_unreachable` | Réseau ou délai dépassé |
-| `channel_not_implemented` | Push et Email n'ont pas encore d'envoyeur (D51) |
+| `channel_not_implemented` | Aucun envoyeur pour ce canal (ne devrait plus arriver : Telegram, Push et Email en ont un) |
 | `sender_error` | Un envoyeur a levé une erreur inattendue |
 
 > **À savoir** : Push est activé par défaut mais sans envoyeur. Tant que Telegram n'est pas configuré, une alerte critique (ex. perte journalière) **n'apparaît que dans la boîte de réception**.
@@ -554,7 +554,7 @@ ws.onopen = () => ws.send(JSON.stringify({ event: 'auth', data: { token: '<acces
 
 `npm run typecheck`, `npm test` (unitaires du hub et du bus), `npm run test:e2e` (nouveau fichier `test/realtime.e2e-spec.ts` avec un vrai client `ws` : authentification, refus, délai, message trop gros, ordre de bout en bout, kill switch, notification, cloisonnement entre deux comptes), `npm run lint` : OK. Vérification manuelle sur l'application complète : voir D104.
 
-**Pas encore fait** : Push et Email (en attente de `web-push` et `nodemailer`), plusieurs instances (Redis pub/sub).
+**Pas encore fait** : plusieurs instances (Redis pub/sub). *Push et Email sont livrés à l'étape 15.*
 
 ---
 
@@ -574,3 +574,79 @@ ws.onopen = () => ws.send(JSON.stringify({ event: 'auth', data: { token: '<acces
 Moteur (Binance réel) + Redis + cette API (PostgreSQL temporaire) : 12 signaux publiés, tous consommés (aucun message en attente, rien dans `signals:dead`) ; le `BUY` est devenu un ordre PAPER proportionnel au score, les `SELL` n'ont rien fait faute de position déclarée ; un second cycle ne republie rien.
 
 **Pas encore fait** : backtest de la stratégie (aucun usage LIVE sans lui), essai sur le testnet Binance.
+
+---
+
+## Étape 15 — Push et Email
+
+**Livré** : les alertes sortent enfin de la boîte de réception par **Web Push** (une notification sur le téléphone ou l'ordinateur) et par **email**, en plus de Telegram. Choix : `docs/DECISIONS.md` (D106 à D113). Contrat pour le front : `docs/SPEC.md` section 9. Dépendances ajoutées : `web-push`, `nodemailer` (et leurs types). **Aucune migration.**
+
+### Fonctionnement
+
+| Élément | Rôle |
+|---|---|
+| `PushSender` | Un message chiffré par appareil abonné ; retire les abonnements révoqués |
+| `WebPushClient` | Envoi chiffré et signé VAPID (bibliothèque `web-push`) ; un faux dans les tests |
+| `PushSubscriptionService` | Appareils de l'utilisateur (5 au plus), liste blanche des services Push |
+| `EmailSender` | Email en texte brut, sujet nettoyé, erreurs réduites à un code |
+| `MailTransport` | SMTP (bibliothèque `nodemailer`) ; un faux dans les tests |
+
+Les canaux activés par l'utilisateur (`pushEnabled`, `emailEnabled`, `telegramEnabled`) reçoivent chaque notification ; le Mode Nuit retient les non critiques, comme avant.
+
+### Routes
+
+| Route | Rôle |
+|---|---|
+| `GET /api/notifications/push` | `{ configured, publicKey, subscriptions }` : à appeler avant de s'abonner |
+| `PUT /api/notifications/push/subscription` | Abonne un appareil (corps de `PushSubscription.toJSON()`) ; remplace l'abonnement de même adresse ; 422 si l'adresse n'est pas un service Push connu |
+| `DELETE /api/notifications/push/subscription` | Retire un appareil (`{ endpoint }`), idempotent |
+| `PATCH /api/notifications/settings` | `pushEnabled`, `emailEnabled`, `notificationEmail` (existant) |
+| `POST /api/notifications/test` | Envoie un message de test sur les canaux activés, avec le détail dans `deliveries` |
+
+### Réglages (variables d'environnement)
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` | | Clés du serveur pour le Push (`npm run vapid:generate`) ; la privée est secrète |
+| `VAPID_SUBJECT` | | `mailto:vous@example.com` ou une adresse https |
+| `SMTP_HOST` | | Serveur SMTP ; sans lui, l'email est « non configuré » |
+| `SMTP_PORT` | `587` | Port SMTP |
+| `SMTP_USER`, `SMTP_PASS` | | Authentification (facultative) |
+| `SMTP_SECURE` | vrai sur le port 465 | TLS dès la connexion |
+| `SMTP_REQUIRE_TLS` | vrai sauf vers la machine locale | Exige STARTTLS ; `false` pour un serveur interne sans TLS |
+| `EMAIL_FROM` | | Expéditeur, par exemple `Veille <veille@example.com>` |
+
+### Mettre en route
+
+```bash
+# Push : générer les clés une fois, les copier dans .env, redémarrer l'API
+npm run vapid:generate
+
+# Email en développement : Mailpit (reçoit les messages sans rien envoyer dehors)
+docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit
+# .env : SMTP_HOST=127.0.0.1  SMTP_PORT=1025  EMAIL_FROM="Veille <veille@example.com>"
+# Messages reçus : http://localhost:8025
+
+# Vérifier : PATCH /api/notifications/settings {"emailEnabled": true}, puis POST /api/notifications/test
+```
+En production, utilisez le SMTP d'un fournisseur (port 587, STARTTLS, identifiants dans `SMTP_USER` et `SMTP_PASS`).
+
+### Diagnostiquer : `deliveries` d'une notification
+
+| `reason` | Sens | Que faire |
+|---|---|---|
+| `push_not_configured` | Pas de clés VAPID (ou sujet invalide) | `npm run vapid:generate`, renseigner les trois variables |
+| `push_no_subscription` | Aucun appareil abonné | S'abonner depuis le front |
+| `push_subscription_gone` | Le navigateur a révoqué l'abonnement (retiré automatiquement) | Se réabonner |
+| `push_http_403` | Le service Push refuse nos clés VAPID | Vérifier `VAPID_*` (clé publique et privée de la même paire) |
+| `push_http_<autre>`, `push_unreachable` | Service Push en panne ou injoignable | Réessayer plus tard |
+| `email_not_configured` | `SMTP_HOST` ou `EMAIL_FROM` manquant | Renseigner les variables |
+| `email_auth_failed` | Identifiants SMTP refusés | Vérifier `SMTP_USER` et `SMTP_PASS` |
+| `email_unreachable` | Serveur SMTP injoignable | Vérifier `SMTP_HOST`, `SMTP_PORT`, le réseau |
+| `email_rejected`, `email_temporary_failure` | Le serveur refuse le message (définitif ou passager) | Vérifier l'expéditeur et le destinataire |
+
+### Vérifications
+
+`npm run typecheck`, `npm test`, `npm run test:e2e` (nouveaux scénarios dans `test/notifications.e2e-spec.ts`), `npm run lint` : OK. Vérification sur l'application complète : voir D112.
+
+**Pas encore fait** : service worker et écran d'abonnement côté `crypto-web`, confirmation de l'adresse email, essai avec un vrai navigateur.

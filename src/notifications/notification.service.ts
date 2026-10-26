@@ -18,6 +18,7 @@ import {
   type DeliveryResult,
 } from './channels/channel-sender.js';
 import { isInNightWindow } from './night-mode.js';
+import { parseSubscriptions } from './push/push-subscription.js';
 
 export interface NotifyInput {
   title: string;
@@ -70,6 +71,7 @@ interface DispatchSettings {
   emailEnabled: boolean;
   telegramChatId: string | null;
   notificationEmail: string | null;
+  pushSubscription: unknown;
 }
 
 const DEFAULT_SETTINGS: DispatchSettings = {
@@ -81,6 +83,7 @@ const DEFAULT_SETTINGS: DispatchSettings = {
   emailEnabled: false,
   telegramChatId: null,
   notificationEmail: null,
+  pushSubscription: null,
 };
 
 /**
@@ -176,6 +179,7 @@ export class NotificationService {
     if (held) return created;
 
     const deliveries = await this.dispatch(
+      userId,
       created,
       settings,
       user.email,
@@ -255,6 +259,7 @@ export class NotificationService {
   }
 
   private async dispatch(
+    userId: string,
     notification: NotificationView,
     settings: DispatchSettings,
     userEmail: string,
@@ -268,8 +273,10 @@ export class NotificationService {
           ...(settings.emailEnabled ? [NotificationChannel.EMAIL] : []),
         ];
     const recipient = {
+      userId,
       telegramChatId: settings.telegramChatId,
       email: settings.notificationEmail ?? userEmail,
+      pushSubscriptions: parseSubscriptions(settings.pushSubscription),
     };
 
     return Promise.all(
