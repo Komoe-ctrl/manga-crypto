@@ -156,3 +156,41 @@ Les champs inconnus sont ignorés (évolution compatible). Un message invalide (
 - Publier avec `XADD signals MAXLEN ~ 10000 * data '<json>'` (le moteur borne la taille du stream).
 - Un `id` par signal, jamais réutilisé pour un autre signal ; republier un signal avec le même `id` est sans effet.
 - Ne pas supposer de réponse : l'API ne répond pas au moteur.
+
+
+---
+
+## 8. TEMPS RÉEL (API → front, WebSocket)
+
+L'API pousse à crypto-web les changements d'état ; le WebSocket **n'envoie que des informations** (aucune commande : tout ce qui agit passe par l'API HTTP). Ce n'est pas décrit par l'OpenAPI, d'où cette section.
+
+### Connexion
+
+- URL : `ws://<hôte>/api/ws` (`wss://` en production), WebSocket natif du navigateur.
+- Chaque message est du JSON : `{"event": "<nom>", "data": { … }}`.
+- **Premier message obligatoire, dans les 5 secondes** : `{"event":"auth","data":{"token":"<access token>"}}`. Le jeton ne doit pas être mis dans l'URL.
+- Réponse : `{"event":"ready","data":{"expiresAt":"<ISO UTC>"}}`. À cette date la connexion est coupée (4401) ; le client peut renvoyer `auth` avec un jeton rafraîchi avant, pour la garder.
+- Erreur : `{"event":"error","data":{"code":"<motif>"}}` puis fermeture.
+- Au plus 5 connexions par utilisateur. Message client limité à 4 Ko. Ping serveur toutes les 30 s (le navigateur répond seul).
+
+| Code de fermeture | Sens |
+|---|---|
+| 4401 | Jeton absent, invalide, expiré, ou compte désactivé |
+| 4408 | Pas d'`auth` dans le délai |
+| 4429 | Trop de connexions |
+| 1009 | Message trop gros |
+| 1001 | Arrêt du serveur |
+
+### Événements (serveur → client), uniquement ceux de l'utilisateur connecté
+
+| `event` | `data` | Quand |
+|---|---|---|
+| `order` | Même forme que `GET /api/orders/:id` (`id`, `status`, `symbol`, `side`, `quantity`, `filledQuantity`, `avgFillPrice`, `stopLossPrice`, `failureReason`, …) ; montants en **chaînes décimales** | À chaque changement d'état d'un ordre : `PENDING`, `SUBMITTED`, `PARTIALLY_FILLED`, `FILLED`, `REJECTED`, `CANCELLED`, `FAILED` |
+| `risk` | `tradingMode`, `killSwitchActive`, `botPausedUntil`, `canTrade`, `blockedReason` | Kill switch, passage LIVE/PAPER, pause sur perte journalière |
+| `notification` | `id`, `title`, `body`, `critical`, `status`, `createdAt` | Chaque nouvelle notification, y compris celles retenues par le Mode Nuit (`status: HELD`) |
+
+### Règles pour le front
+
+- **Pas de rejeu** : un événement émis pendant une déconnexion est perdu. À chaque (re)connexion, relire l'état par l'API REST, puis s'appuyer sur les événements.
+- Reconnexion avec un délai croissant ; après 4401, rafraîchir le jeton d'abord.
+- Les événements sont des **signaux de mise à jour** : en cas de doute, relire la ressource par l'API (l'état du portefeuille, par exemple, se relit sur un événement `order`).

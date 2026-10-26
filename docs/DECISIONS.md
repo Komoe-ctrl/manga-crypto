@@ -397,6 +397,52 @@ Comme aux étapes 6 à 10 : base temporaire, Redis n° 9, application complète.
 ### D96. Limites
 Pas de réponse au moteur (il ne sait pas ce qu'il est advenu d'un signal) ; pas de réglage du seuil par utilisateur ; un seul groupe de consommateurs (`api`), plusieurs instances de l'API se partagent les messages mais chaque message n'est traité que par une ; les messages en attente sont repris après 60 s, donc un signal retenté a un délai minimal d'une minute (la péremption de 5 minutes borne les reprises utiles).
 
+## Étape 12 — WebSocket vers le front
+
+### D97. Dépendances : `@nestjs/websockets`, `@nestjs/platform-ws` et `ws` (validées par « fait pour le mieux »)
+`ws` est la bibliothèque WebSocket de référence de Node, et `@nestjs/platform-ws` est l'adaptateur officiel de Nest pour elle. Je n'ai pas retenu socket.io : il impose un client dédié côté front (`socket.io-client`), un protocole propre (sondage HTTP puis montée en WebSocket) et plus de code à sécuriser, pour des fonctions (salles, reconnexion automatique) dont on n'a pas besoin ici. Le front utilise le `WebSocket` natif du navigateur.
+Prérequis à connaître : l'adaptateur doit être déclaré (`app.useWebSocketAdapter(new WsAdapter(app))`) dans `main.ts` **et dans chaque test e2e** ; sans lui, Nest arrête le processus dès qu'une passerelle existe.
+
+### D98. Connexion sur `/api/ws`, authentification par un premier message
+- **Chemin `/api/ws`** : même préfixe que l'API, donc la même règle de proxy en production.
+- **Le jeton n'est pas dans l'URL.** Un navigateur ne peut pas poser d'en-tête `Authorization` sur un WebSocket ; mettre le jeton dans l'URL le ferait finir dans les journaux des proxys. Le client envoie donc `{"event":"auth","data":{"token":"…"}}` comme **premier message**, et sans lui la connexion est fermée au bout de 5 s (code 4408).
+- **Mêmes règles que l'API HTTP** : jeton d'accès signé valide et compte non désactivé (relu en base, donc un compte désactivé perd l'accès tout de suite).
+- **Expiration** : le jeton d'accès vit 15 minutes ; à l'échéance la connexion est coupée (4401 `token_expired`). Le client peut aussi renvoyer un message `auth` avec un jeton rafraîchi **avant** l'échéance pour la prolonger sans se reconnecter ; un jeton d'un autre utilisateur sur la même connexion est refusé.
+- **Passerelle `@Public()` et `@SkipThrottle()`** : les gardes HTTP globales (en-tête `Authorization`, limitation par IP) ne s'appliquent pas à une connexion WebSocket et planteraient dessus ; l'authentification est faite par `RealtimeHub`.
+
+### D99. Un bus interne, publication facultative et sans effet sur le métier
+Les services métier publient sur un `RealtimeBus` en mémoire ; la passerelle s'y abonne. Les modules métier ne connaissent donc pas le WebSocket. Le bus est injecté avec `@Optional()` (les tests unitaires existants n'ont pas changé) et `publish` **ne lève jamais d'erreur** : une panne de diffusion ne doit jamais faire échouer un ordre, une notification ou un changement de mode. Côté exécuteur d'ordres, la lecture de l'ordre à diffuser est elle aussi protégée (`emitOrder`, best effort).
+Pas de dépendance `@nestjs/event-emitter` : vingt lignes suffisent.
+
+### D100. Trois événements : `order`, `risk`, `notification`
+- **`order`** : création (`PENDING` ou `REJECTED` avec son motif), prise en charge (`SUBMITTED`), exécution (`FILLED`, `PARTIALLY_FILLED`, `CANCELLED`), refus, abandon, annulation. Le contenu est celui de `GET /api/orders/:id` (montants en chaînes décimales). L'événement d'exécution est publié **après** la mise à jour du portefeuille : un front qui relit `/api/portfolio` en réaction voit déjà le résultat.
+- **`risk`** : kill switch activé ou désactivé, passage LIVE ou PAPER, pause sur perte journalière.
+- **`notification`** : chaque nouvelle notification (id, titre, texte, `critical`, `status`, date), sans le détail des livraisons.
+- **Pas d'événement de valorisation du portefeuille**, contrairement à ce que j'avais d'abord envisagé : rien dans l'application ne calcule la valorisation en continu (elle est calculée à la demande à partir des prix), et en pousser une toutes les N secondes demanderait un nouveau job et des appels de prix permanents pour tous les utilisateurs connectés. Le front relit `GET /api/portfolio` sur un événement `order`, ou à son rythme.
+
+### D101. Les notifications du Mode Nuit sont aussi poussées
+Une notification retenue par le Mode Nuit (`HELD`) est poussée au front avec son statut. Le Mode Nuit protège l'utilisateur des **sollicitations** (Telegram, push, email) ; or un front ouvert est un utilisateur qui regarde : lui cacher la boîte de réception serait une incohérence. Le front décide quoi afficher grâce à `status`.
+
+### D102. Cloisonnement, limites et connexions mortes
+- **Un utilisateur ne reçoit que ses événements** (registre `userId` → connexions, testé de bout en bout avec deux comptes).
+- **5 connexions par utilisateur** au plus (`REALTIME_MAX_CONNECTIONS_PER_USER`), code 4429 au-delà : plusieurs onglets, pas une fuite de connexions.
+- **Message client limité à 4 Ko** (`maxPayload`) : le seul message légitime est un jeton ; au-delà, la connexion est fermée (1009).
+- **Ping toutes les 30 s**, connexion coupée si le pong précédent n'est pas revenu (appareil parti sans fermer).
+- **Rien de sensible dans les messages** : aucune clé, aucun secret, pas de `signalPayload` ni de métadonnées internes ; on réutilise la vue d'ordre de l'API.
+
+### D103. `toView` extrait dans son fichier (cycle d'import)
+L'exécuteur d'ordres a besoin de `toView` pour diffuser ; en l'important depuis `orders.service.ts`, on créait le cycle `orders.service → order-dispatcher → order-executor → orders.service`. Résultat visible seulement à l'exécution : une dépendance injectée `undefined` (« Nest can't resolve dependencies of the InlineOrderDispatcher »), alors que `tsc` et les tests unitaires passaient. `toView` vit maintenant dans `order-view.ts`, que les deux importent.
+
+### D104. Vérification sur l'application complète (vrai PostgreSQL, Redis, prix de Binance)
+Avec `dist/main.js` (donc le vrai `main.ts`, que les tests e2e ne passent pas) et un vrai client `ws` : authentification (`ready` avec la date d'expiration) ; ordre PAPER aux prix réels → `PENDING → SUBMITTED → FILLED` avec stop-loss dans l'événement final ; kill switch → `risk`, puis ordre refusé poussé avec `kill_switch` ; notification de test poussée ; **un second utilisateur connecté ne reçoit rien** ; jeton invalide → 4401 ; aucune authentification → 4408 au bout de 5 s ; message de 10 Ko → 1009 ; l'API HTTP reste protégée (401 sans jeton, 200 avec).
+*À savoir :* le message trop gros fait écrire une ligne `ERROR [WsAdapter] RangeError: Max payload size exceeded` dans les journaux (comportement de Nest, non configurable) ; une rafale de tels messages serait bruyante mais ne coûte pas de ressources, la connexion étant fermée à chaque fois.
+
+### D105. Limites
+- **Une seule instance de l'API** : le bus est en mémoire. Avec plusieurs instances, un événement n'atteindrait que les clients connectés à l'instance qui l'a produit ; il faudrait passer par Redis pub/sub.
+- **Aucun rejeu** : un événement émis pendant que le client est déconnecté est perdu. **Le front doit relire l'état par l'API REST à chaque (re)connexion** (ordres, notifications, état du robot), puis s'appuyer sur les événements.
+- Le WebSocket est un flux d'état, pas un canal d'alerte : il ne remplace ni Telegram, ni le push, ni l'email.
+- Pas de commandes via le WebSocket (kill switch, ordres) : tout ce qui agit passe par l'API HTTP et ses gardes, d'où une seule surface à sécuriser.
+
 ---
 
 ## À prévoir (hors étapes livrées)
@@ -421,7 +467,8 @@ Pas de réponse au moteur (il ne sait pas ce qu'il est advenu d'un signal) ; pas
 | Alertes : valeur de la dernière évaluation | L'API n'expose pas le prix observé ni l'écart au seuil (« ETH à ~2,5 % de votre seuil », maquette) ; à ajouter si le front en a besoin. |
 | Cache Redis des prix et de l'historique | Voir D36 : les prix passés sont aujourd'hui en mémoire (perdus au redémarrage, non partagés entre instances). |
 | Envoyeurs Push (Web Push) et Email (SMTP) | Voir D51 : demandent `web-push` et `nodemailer`, à valider. Sans eux, les alertes critiques ne sortent pas de la boîte de réception. |
-| Passerelle WebSocket vers le front | La boîte de réception se lit aujourd'hui par `GET /api/notifications` ; le temps réel (socket.io) viendra avec le front. |
+| Plusieurs instances de l'API et temps réel | Voir D105 : le bus WebSocket est en mémoire ; Redis pub/sub si l'API tourne en plusieurs instances. |
+| Rejeu des événements WebSocket manqués | Voir D105 : le front relit l'état par l'API à chaque reconnexion ; un identifiant d'événement permettrait de rejouer. |
 | Purge des anciennes notifications | La table grossit sans limite. |
 | Pertes dues aux ordres du robot dans la perte journalière | Voir D43 : nécessite la lecture des soldes sur la plateforme (module d'ordres). |
 | Tests d'intégration automatisés avec Redis et PostgreSQL | Voir D47 : la vérification sur un vrai Redis est aujourd'hui manuelle ; elle a trouvé un défaut que les tests unitaires ne pouvaient pas voir. |

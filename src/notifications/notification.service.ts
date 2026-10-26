@@ -1,10 +1,17 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client.js';
 import {
   NotificationChannel,
   NotificationStatus,
 } from '../generated/prisma/enums.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RealtimeBus } from '../realtime/realtime-events.js';
 import {
   CHANNEL_SENDERS,
   type ChannelSender,
@@ -88,6 +95,7 @@ export class NotificationService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(CHANNEL_SENDERS) private readonly senders: ChannelSender[],
+    @Optional() private readonly realtime?: RealtimeBus,
   ) {}
 
   /** Renvoie `null` si l'utilisateur est introuvable ou désactivé. */
@@ -152,6 +160,19 @@ export class NotificationService {
       }
       throw error;
     }
+    // Poussée au front dès l'enregistrement (boîte de réception), y compris en Mode Nuit : le front ouvert l'affiche,
+    // seul l'envoi sur les canaux externes est retenu.
+    this.realtime?.publish(userId, {
+      type: 'notification',
+      data: {
+        id: created.id,
+        title: created.title,
+        body: created.body,
+        critical: created.critical,
+        status: created.status,
+        createdAt: created.createdAt,
+      },
+    });
     if (held) return created;
 
     const deliveries = await this.dispatch(

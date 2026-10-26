@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service.js';
@@ -9,6 +10,7 @@ import type { RequestContext } from '../auth/auth.service.js';
 import { PasswordService } from '../auth/password.service.js';
 import { ExchangeStatus, TradingMode } from '../generated/prisma/enums.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RealtimeBus, toRiskEvent } from '../realtime/realtime-events.js';
 import type {
   BlockedReason,
   SwitchToLiveDto,
@@ -33,6 +35,7 @@ export class TradingControlService {
     private readonly prisma: PrismaService,
     private readonly passwords: PasswordService,
     private readonly audit: AuditService,
+    @Optional() private readonly realtime?: RealtimeBus,
   ) {}
 
   async status(userId: string): Promise<TradingStatusDto> {
@@ -68,7 +71,7 @@ export class TradingControlService {
       entityId: userId,
       ...ctx,
     });
-    return this.status(userId);
+    return this.announce(userId);
   }
 
   async deactivateKillSwitch(
@@ -88,7 +91,7 @@ export class TradingControlService {
       entityId: userId,
       ...ctx,
     });
-    return this.status(userId);
+    return this.announce(userId);
   }
 
   /**
@@ -157,7 +160,7 @@ export class TradingControlService {
       action: 'mode.live_enabled',
       metadata: { exchangeConfigId: exchange.id },
     });
-    return this.status(userId);
+    return this.announce(userId);
   }
 
   /** Retour en simulation : toujours immédiat, sans condition. */
@@ -181,6 +184,13 @@ export class TradingControlService {
       entityId: userId,
       ...ctx,
     });
-    return this.status(userId);
+    return this.announce(userId);
+  }
+
+  /** Relit l'état après un changement et le pousse au front (échec de diffusion sans effet). */
+  private async announce(userId: string): Promise<TradingStatusDto> {
+    const status = await this.status(userId);
+    this.realtime?.publish(userId, { type: 'risk', data: toRiskEvent(status) });
+    return status;
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service.js';
 import { formatNumber } from '../common/format.js';
 import { ExchangesService } from '../exchanges/exchanges.service.js';
@@ -17,6 +17,7 @@ import {
   PriceUnavailableError,
 } from '../portfolio/price/price-provider.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RealtimeBus } from '../realtime/realtime-events.js';
 import { RiskSettingsService } from '../risk/risk-settings.service.js';
 import { stopLossTakeProfit, type DecimalInput } from '../risk/risk-rules.js';
 import { TradingControlService } from '../risk/trading-control.service.js';
@@ -32,6 +33,7 @@ import {
   paperFee,
   type RejectionReason,
 } from './order-rules.js';
+import { toView } from './order-view.js';
 import { RetryableOrderError } from './orders.types.js';
 
 const D = (value: DecimalInput) => new Prisma.Decimal(value);
@@ -71,6 +73,7 @@ export class OrderExecutor {
     private readonly gateway: ExchangeGateway,
     private readonly audit: AuditService,
     private readonly notifications: NotificationService,
+    @Optional() private readonly realtime?: RealtimeBus,
   ) {}
 
   /** @throws RetryableOrderError pour un problème transitoire (prix, plateforme, ordre pas encore soldé). */
@@ -108,6 +111,7 @@ export class OrderExecutor {
       });
       if (claimed.count !== 1) return; // pris par un autre passage
       claimedNow = true;
+      await this.emitOrder(id);
     }
 
     // Un ordre déjà parti (SUBMITTED d'un essai précédent) n'est jamais abandonné pour un garde-fou : il se réconcilie.
@@ -161,6 +165,7 @@ export class OrderExecutor {
       entityId: order.id,
       metadata: { reason: 'retries_exhausted', mode: order.mode },
     });
+    await this.emitOrder(order.id);
     if (order.mode === TradingMode.LIVE || isExit(order.origin)) {
       await this.notify(order, {
         title: 'Ordre abandonné',
@@ -298,6 +303,8 @@ export class OrderExecutor {
     }
     if (fill.settled && fill.status !== OrderStatus.CANCELLED)
       await this.announceFill(order, fill);
+    // En dernier : le portefeuille est à jour quand le front est prévenu.
+    await this.emitOrder(order.id);
   }
 
   /** Niveaux de stop-loss et de take-profit d'une entrée, d'après les réglages de risque de l'utilisateur. */
@@ -447,6 +454,7 @@ export class OrderExecutor {
       entityId: order.id,
       metadata: { reason, mode: order.mode, origin: order.origin },
     });
+    await this.emitOrder(order.id);
     // Un refus en PAPER d'un ordre manuel est visible dans la réponse de l'API ; en LIVE ou pour une sortie, on prévient.
     if (order.mode === TradingMode.LIVE || isExit(order.origin)) {
       await this.notify(order, {
@@ -455,6 +463,20 @@ export class OrderExecutor {
         critical: true,
         key: 'rejected',
       });
+    }
+  }
+
+  /** Pousse l'état à jour de l'ordre au front. Best effort : une panne ici ne doit jamais défaire un ordre. */
+  private async emitOrder(id: string): Promise<void> {
+    if (!this.realtime) return;
+    try {
+      const row = await this.prisma.tradeLog.findUnique({ where: { id } });
+      if (row)
+        this.realtime.publish(row.userId, { type: 'order', data: toView(row) });
+    } catch (error) {
+      this.logger.warn(
+        `Ordre non diffusé au front (${id}) : ${error instanceof Error ? error.name : 'erreur inconnue'}`,
+      );
     }
   }
 

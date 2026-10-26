@@ -2,6 +2,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service.js';
 import type { RequestContext } from '../auth/auth.service.js';
@@ -20,15 +21,16 @@ import {
   PriceUnavailableError,
 } from '../portfolio/price/price-provider.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RealtimeBus } from '../realtime/realtime-events.js';
 import { RiskSettingsService } from '../risk/risk-settings.service.js';
 import { exceedsExposure } from '../risk/risk-rules.js';
 import { TradingControlService } from '../risk/trading-control.service.js';
 import { OrderDispatcher } from './order-dispatcher.js';
+import { toView } from './order-view.js';
 import {
   PAPER_FEE_RATE,
   QUOTE,
   STABLECOINS,
-  isRejectionReason,
   newClientOrderId,
   toPair,
   type RejectionReason,
@@ -59,6 +61,7 @@ export class OrdersService {
     private readonly riskSettings: RiskSettingsService,
     private readonly dispatcher: OrderDispatcher,
     private readonly audit: AuditService,
+    @Optional() private readonly realtime?: RealtimeBus,
   ) {}
 
   /** Vérifie les garde-fous, enregistre l'ordre (avec son `clientOrderId` idempotent) puis l'envoie à l'exécution. */
@@ -106,6 +109,7 @@ export class OrdersService {
       throw error;
     }
 
+    this.realtime?.publish(userId, { type: 'order', data: toView(row) });
     await this.audit.log({
       userId,
       action: rejection ? 'order.rejected' : 'order.submitted',
@@ -173,7 +177,9 @@ export class OrdersService {
       entityId: id,
       ...ctx,
     });
-    return this.get(userId, id);
+    const view = await this.get(userId, id);
+    this.realtime?.publish(userId, { type: 'order', data: view });
+    return view;
   }
 
   /**
@@ -244,33 +250,4 @@ export class OrdersService {
     if (!row) throw new NotFoundException();
     return row;
   }
-}
-
-const str = (value: Prisma.Decimal | null): string | null =>
-  value === null ? null : D(value).toFixed();
-
-export function toView(row: TradeLog): OrderView {
-  return {
-    id: row.id,
-    clientOrderId: row.clientOrderId,
-    mode: row.mode,
-    symbol: row.symbol,
-    side: row.side,
-    type: row.type,
-    status: row.status,
-    origin: row.origin,
-    quantity: D(row.quantity).toFixed(),
-    filledQuantity: D(row.filledQuantity).toFixed(),
-    avgFillPrice: str(row.avgFillPrice),
-    fee: str(row.fee),
-    feeCurrency: row.feeCurrency,
-    stopLossPrice: str(row.stopLossPrice),
-    takeProfitPrice: str(row.takeProfitPrice),
-    failureReason: isRejectionReason(row.failureReason)
-      ? row.failureReason
-      : row.failureReason,
-    parentOrderId: row.parentOrderId,
-    createdAt: row.createdAt,
-    executedAt: row.executedAt,
-  };
 }

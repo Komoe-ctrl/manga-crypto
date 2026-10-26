@@ -1,4 +1,5 @@
 import { ValidationPipe, type INestApplication } from '@nestjs/common';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
@@ -18,6 +19,7 @@ describe('Notifications (e2e)', () => {
       .compile();
     app = moduleRef.createNestApplication();
     app.setGlobalPrefix('api');
+    app.useWebSocketAdapter(new WsAdapter(app));
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,

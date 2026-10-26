@@ -16,6 +16,7 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { OrdersModule } from './orders/orders.module.js';
 import { PortfolioModule } from './portfolio/portfolio.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { RealtimeModule } from './realtime/realtime.module.js';
 import { QueueModule } from './queue/queue.module.js';
 import { SignalsModule } from './signals/signals.module.js';
 import { RiskMonitorModule } from './risk/monitor/risk-monitor.module.js';
@@ -42,6 +43,7 @@ import { RiskModule } from './risk/risk.module.js';
     DigestEngineModule.register(),
     OrdersModule.register(),
     SignalsModule.register(),
+    RealtimeModule,
   ],
   controllers: [AppController],
   providers: [
