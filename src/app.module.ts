@@ -17,6 +17,7 @@ import { OrdersModule } from './orders/orders.module.js';
 import { PortfolioModule } from './portfolio/portfolio.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { QueueModule } from './queue/queue.module.js';
+import { SignalsModule } from './signals/signals.module.js';
 import { RiskMonitorModule } from './risk/monitor/risk-monitor.module.js';
 import { RiskModule } from './risk/risk.module.js';
 
@@ -40,6 +41,7 @@ import { RiskModule } from './risk/risk.module.js';
     DigestsModule,
     DigestEngineModule.register(),
     OrdersModule.register(),
+    SignalsModule.register(),
   ],
   controllers: [AppController],
   providers: [

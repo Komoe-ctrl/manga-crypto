@@ -51,6 +51,14 @@ export interface OrderView {
   executedAt: Date | null;
 }
 
+/** Ce signal a déjà donné lieu à un ordre pour cet utilisateur (contrainte unique `userId` + `signalStreamId`). */
+export class DuplicateOrderError extends Error {
+  constructor() {
+    super('Un ordre existe déjà pour ce signal');
+    this.name = 'DuplicateOrderError';
+  }
+}
+
 /** Erreur transitoire de l'exécution : l'ordre sera réessayé (file BullMQ) ou abandonné après le dernier essai. */
 export class RetryableOrderError extends Error {
   constructor(

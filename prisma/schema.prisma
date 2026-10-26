@@ -350,7 +350,8 @@ model TradeLog {
   stopLossPrice   Decimal? @db.Decimal(38, 8)
   takeProfitPrice Decimal? @db.Decimal(38, 8)
 
-  /// ID du message dans le Redis Stream `signals` (traçabilité).
+  /// Identifiant du signal à l'origine de l'ordre (champ `id` émis par le moteur, voir docs/SPEC.md section 7).
+  /// Unique par utilisateur : un signal ne passe jamais deux fois un ordre, même traité deux fois en parallèle.
   signalStreamId String?
   /// Signal d'origine tel que reçu du moteur : action, score, justification.
   signalPayload  Json?
@@ -370,9 +371,9 @@ model TradeLog {
   updatedAt  DateTime  @updatedAt
   executedAt DateTime?
 
+  @@unique([userId, signalStreamId])
   @@index([userId, createdAt])
   @@index([status])
-  @@index([signalStreamId])
   @@index([parentOrderId])
   @@map("trade_logs")
 }

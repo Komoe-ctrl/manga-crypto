@@ -106,3 +106,53 @@ L'algorithme ne doit jamais investir au hasard. Règles absolues, stockées en b
 | PostgreSQL / Redis | 18 / 8 (docker-compose.yml de crypto-api) |
 
 Ne pas monter ces versions majeures sans validation.
+
+---
+
+## 7. CONTRAT DES SIGNAUX (moteur → API)
+
+Le moteur (`crypto-engine`) publie ses signaux dans le **Redis Stream `signals`** ; l'API les consomme (groupe de consommateurs `api`), applique la gestion des risques puis passe l'ordre. Le moteur n'a pas accès aux clés API et n'envoie aucun ordre.
+
+### Message
+
+Une entrée du stream = **un seul champ `data`** contenant un objet JSON (UTF-8, 8 Ko au plus), version 1 :
+
+```json
+{
+  "v": 1,
+  "id": "6f2b4d58-3c7f-4b6a-9d52-1c5d2b1f0a11",
+  "ts": "2026-10-24T08:00:00Z",
+  "symbol": "BTC",
+  "action": "BUY",
+  "score": 0.82,
+  "price": "81700.5",
+  "reason": "EMA20 > EMA50, RSI 41",
+  "indicators": { "rsi": 41, "ema20": 81500, "ema50": 80900 }
+}
+```
+
+| Champ | Obligatoire | Règle |
+|---|---|---|
+| `v` | oui | Entier `1`. Toute autre version est refusée. |
+| `id` | oui | Identifiant **unique** du signal (UUID conseillé), 1 à 64 caractères parmi `A-Z a-z 0-9 - _ . :`. Sert à la déduplication : un même `id` ne passe jamais deux fois un ordre, même republié. |
+| `ts` | oui | Instant de l'analyse, ISO 8601 en UTC (`Z`). Refusé s'il est à plus de 60 s dans le futur. Un signal plus vieux que 5 minutes est ignoré (son prix n'est plus valable). |
+| `symbol` | oui | Actif de base en majuscules (`BTC`), 2 à 12 caractères `A-Z 0-9`. La paire négociée est `<symbol>/USDT`. Les stablecoins ne se négocient pas. |
+| `action` | oui | `BUY`, `SELL` ou `HOLD`. `HOLD` est enregistré mais ne déclenche aucun ordre. |
+| `score` | oui | Nombre de 0 à 1 : confiance du moteur. Sous le seuil (0,6 par défaut), le signal est ignoré ; au-dessus, il dimensionne l'achat. |
+| `price` | non | Prix à l'analyse, chaîne décimale positive (informatif). Un achat est ignoré si le prix a bougé de plus de 2 % depuis. |
+| `reason` | non | Justification lisible, 500 caractères au plus. |
+| `indicators` | non | Objet JSON libre (valeurs de RSI, MACD…), 2 Ko au plus une fois sérialisé. |
+
+Les champs inconnus sont ignorés (évolution compatible). Un message invalide (JSON illisible, champ manquant ou hors règle, version inconnue) n'est pas retenté : il est déplacé dans le stream **`signals:dead`** avec son motif.
+
+### Ce que fait l'API d'un signal valide
+
+- **`BUY`** : pour chaque utilisateur actif dont le robot n'est ni arrêté ni en pause, achète jusqu'à l'exposition maximale par position (`RiskSettings.maxExposurePct` du capital total) moins la position déjà détenue, **proportionnellement au score** (score 0,8 = 80 % de la place disponible). Mode PAPER (simulation) ou LIVE selon l'utilisateur.
+- **`SELL`** : vend **toute** la position détenue du symbole.
+- Dans tous les cas, l'ordre passe par les garde-fous habituels (kill switch, pause, exposition, fonds) et garde l'`id` du signal et son contenu pour la traçabilité.
+
+### Côté moteur
+
+- Publier avec `XADD signals MAXLEN ~ 10000 * data '<json>'` (le moteur borne la taille du stream).
+- Un `id` par signal, jamais réutilisé pour un autre signal ; republier un signal avec le même `id` est sans effet.
+- Ne pas supposer de réponse : l'API ne répond pas au moteur.

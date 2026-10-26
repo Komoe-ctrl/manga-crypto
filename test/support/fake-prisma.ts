@@ -404,7 +404,16 @@ export class FakePrisma {
     count: async ({ where }: Row) =>
       this.tradeLogs.filter((t) => matches(t, where)).length,
     create: async ({ data }: Row) => {
-      if (this.tradeLogs.some((t) => t.clientOrderId === data.clientOrderId)) {
+      // Contraintes uniques du schéma : clientOrderId, et (userId, signalStreamId) quand l'ordre vient d'un signal.
+      if (
+        this.tradeLogs.some(
+          (t) =>
+            t.clientOrderId === data.clientOrderId ||
+            (data.signalStreamId != null &&
+              t.userId === data.userId &&
+              t.signalStreamId === data.signalStreamId),
+        )
+      ) {
         throw new Prisma.PrismaClientKnownRequestError(
           'Unique constraint failed',
           { code: 'P2002', clientVersion: 'test' },
