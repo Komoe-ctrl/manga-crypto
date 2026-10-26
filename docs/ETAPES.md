@@ -484,7 +484,7 @@ Options : `--symbol`, `--action`, `--score`, `--price`, `--reason`, `--id`, `--t
 - **Retard ou messages bloqués** : `XINFO GROUPS signals` (`pending`, `lag`) et `XPENDING signals api`.
 - **Un signal n'a pas donné d'ordre** : chercher son `id` dans les journaux (résultat par utilisateur) puis dans `GET /api/orders` (`signalStreamId`).
 
-**Pas encore fait** : émission des signaux par `crypto-engine`, réglages par utilisateur, essai sur le testnet Binance (l'ordre LIVE réel reste jamais exercé, voir étape 10).
+**Pas encore fait** : réglages par utilisateur, essai sur le testnet Binance (l'ordre LIVE réel reste jamais exercé, voir étape 10). *L'émission des signaux par le moteur est faite à l'étape 13.*
 
 
 ---
@@ -554,4 +554,23 @@ ws.onopen = () => ws.send(JSON.stringify({ event: 'auth', data: { token: '<acces
 
 `npm run typecheck`, `npm test` (unitaires du hub et du bus), `npm run test:e2e` (nouveau fichier `test/realtime.e2e-spec.ts` avec un vrai client `ws` : authentification, refus, délai, message trop gros, ordre de bout en bout, kill switch, notification, cloisonnement entre deux comptes), `npm run lint` : OK. Vérification manuelle sur l'application complète : voir D104.
 
-**Pas encore fait** : Push et Email (en attente de `web-push` et `nodemailer`), plusieurs instances (Redis pub/sub), émission des signaux par `crypto-engine`.
+**Pas encore fait** : Push et Email (en attente de `web-push` et `nodemailer`), plusieurs instances (Redis pub/sub).
+
+---
+
+## Étape 13 — Le moteur publie ses signaux (dépôt `crypto-engine`)
+
+**Livré dans `../crypto-engine`** (aucun changement de code ici) : le moteur analyse le top 20 de Binance (bougies 1h fermées, EMA 20/50, RSI, MACD, Bollinger, volatilité) et publie ses `BUY` / `SELL` dans le stream `signals`, selon le contrat de `docs/SPEC.md` section 7. Documentation du moteur : `docs/DECISIONS.md` (E1 à E13) et `docs/FONCTIONNEMENT.md` dans ce dépôt voisin.
+
+### Ce que l'API reçoit, concrètement
+
+- Un signal **seulement quand la position recommandée change**, confirmée sur 3 bougies fermées (donc quelques signaux par jour pour l'ensemble des symboles, pas un par minute).
+- Un `id` du type `ETH-1h-1793001600000-SELL` (symbole, durée de bougie, ouverture de la bougie, action), déterministe : la déduplication de l'étape 11 joue pleinement.
+- Une `reason` en clair, enregistrée avec l'ordre (`signalPayload`) : « Baissier : EMA20 < EMA50 (-0,68 %), MACD négatif, RSI sain (46), prix au-dessus de la bande basse ».
+- Le **premier cycle du moteur ne publie rien** (il enregistre l'état) : après le démarrage, rien n'arrive tant qu'une position recommandée ne change pas.
+
+### Vérifié sur l'infrastructure réelle
+
+Moteur (Binance réel) + Redis + cette API (PostgreSQL temporaire) : 12 signaux publiés, tous consommés (aucun message en attente, rien dans `signals:dead`) ; le `BUY` est devenu un ordre PAPER proportionnel au score, les `SELL` n'ont rien fait faute de position déclarée ; un second cycle ne republie rien.
+
+**Pas encore fait** : backtest de la stratégie (aucun usage LIVE sans lui), essai sur le testnet Binance.
