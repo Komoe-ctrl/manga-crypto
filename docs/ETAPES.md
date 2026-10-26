@@ -573,7 +573,7 @@ ws.onopen = () => ws.send(JSON.stringify({ event: 'auth', data: { token: '<acces
 
 Moteur (Binance réel) + Redis + cette API (PostgreSQL temporaire) : 12 signaux publiés, tous consommés (aucun message en attente, rien dans `signals:dead`) ; le `BUY` est devenu un ordre PAPER proportionnel au score, les `SELL` n'ont rien fait faute de position déclarée ; un second cycle ne republie rien.
 
-**Pas encore fait** : backtest de la stratégie (aucun usage LIVE sans lui), essai sur le testnet Binance.
+**Pas encore fait** : essai sur le testnet Binance. *Le backtest de la stratégie est fait (étapes 14 et 16 du moteur) : il conclut que la stratégie à indicateurs n'a pas d'avantage démontrable (voir `crypto-engine`, `docs/BACKTEST.md`). Le moteur ne doit donc pas alimenter de compte en LIVE.*
 
 ---
 
