@@ -360,6 +360,45 @@ Comme aux étapes 6 à 9, plus le vrai `ccxt` avec de **fausses clés** (aucun f
 
 ---
 
+## Étape 11 — Consommation des signaux
+
+### D88. Le contrat des signaux est dans `docs/SPEC.md` (section 7), source de vérité pour le moteur
+Redis Stream `signals`, un seul champ `data` contenant du JSON v1 : `v`, `id`, `ts`, `symbol`, `action` (`BUY` / `SELL` / `HOLD`), `score` (0 à 1), puis `price`, `reason`, `indicators` facultatifs. Validation **stricte** (`parseSignal`) : un message ambigu est refusé plutôt que deviné, car un signal sert à passer des ordres. Champs inconnus ignorés (évolution compatible), version inconnue refusée, `ts` à plus de 60 s dans le futur refusé, message de plus de 8 Ko refusé (mesuré en octets). Aucune dépendance : validation écrite à la main, testée sur chaque règle.
+*Le moteur Python n'émet encore rien* : cette étape ne touche pas `crypto-engine`, elle fixe le contrat et fournit un outil d'essai (`npm run signals:publish`).
+
+### D89. Consommateur : groupe `api`, acquittement après traitement, reprise, abandon
+`SignalConsumer` lit avec `XREADGROUP` (groupe créé **depuis le début** du stream : les signaux publiés avant le premier démarrage sont traités, les périmés ignorés) sur une **connexion dédiée** (un `BLOCK` paralyserait la connexion partagée de BullMQ).
+- Acquittement **après** traitement : au moins une fois ; la déduplication (D93) rend un retraitement inoffensif.
+- Message invalide → `signals:dead` (motif, identifiant, début du contenu) puis acquittement, **sans nouvel essai** : un message corrompu ne boucle jamais.
+- Traitement à retenter (prix indisponible, erreur) → reste en attente ; `XAUTOCLAIM` le reprend après 60 s d'inactivité (plantage compris) ; après **5 livraisons** → `signals:dead` (`handler_failed`).
+- Une pause de 50 ms après un passage vide : si Redis répondait instantanément à vide, la boucle ne doit jamais tourner à 100 % du processeur (un test l'a rendu visible en saturant la mémoire).
+
+### D90. Réglages : seuil, péremption, écart de prix
+`SIGNAL_MIN_SCORE` (0,6), `SIGNAL_MAX_AGE_SECONDS` (300), `SIGNAL_MAX_PRICE_DRIFT_PCT` (2) ; une valeur absente, non numérique ou hors limites donne le défaut. Un signal périmé est ignoré (son prix n'est plus valable) ; un **achat** est ignoré si le prix a bougé de plus de 2 % depuis l'analyse (on ne court pas après le marché) ; une **vente** n'est pas soumise à l'écart (on ne bloque pas une sortie). Le seuil s'applique aux deux sens. À terme, ces réglages pourraient devenir des réglages par utilisateur.
+
+### D91. Dimensionnement : la place disponible, proportionnelle au score
+Achat = (plafond d'exposition × capital − position déjà détenue) × score ÷ prix, **arrondi à la baisse** à 8 décimales (`sizeBuy`, fonction pure en `Decimal`) : l'arrondi ne peut jamais faire dépasser le plafond, ce qu'un test vérifie sur des centaines de combinaisons. Position déjà au plafond → aucun ordre. Le garde-fou d'exposition des ordres le revérifie de toute façon. **Vente = toute la position détenue** du symbole.
+*À savoir :* la position est celle du portefeuille **déclaré** : un signal `SELL` vend aussi ce que l'utilisateur a déclaré avoir acheté lui-même.
+
+### D92. Un signal vaut pour tous les utilisateurs actifs, sans option supplémentaire
+Le signal ne vise personne : chaque utilisateur actif passe par `OrdersService.submit`, donc par **les mêmes garde-fous que tout ordre** (kill switch, pause, exposition, fonds, mode PAPER ou LIVE). Le mode LIVE reste le seul opt-in (explicite, audité, avec mot de passe, D28) ; ajouter une option « trading automatique » dédiée n'apporterait rien tant que le client est seul. Différence avec un ordre manuel : quand le robot est **arrêté ou en pause**, le signal est simplement ignoré (`robot_blocked`) au lieu d'être enregistré en `REJECTED` : un signal n'est pas une intention de l'utilisateur, et un kill switch de plusieurs jours produirait un journal de refus sans intérêt. Les autres refus (fonds insuffisants…) sont enregistrés avec leur motif.
+
+### D93. Déduplication garantie par la base : unique `(userId, signalStreamId)`
+L'identifiant du signal (champ `id` du moteur) est stocké dans `TradeLog.signalStreamId` ; l'entrée du stream est conservée dans `signalPayload.streamEntryId` avec tout le contenu du signal (traçabilité signal → ordre). Une vérification préalable évite le travail inutile, mais **ne suffit pas** : deux traitements simultanés du même signal lisent tous deux « pas encore d'ordre ». La protection est une **contrainte unique en base** (migration `unique_signal_per_user`, remplace l'index simple) : le second `INSERT` échoue (`DuplicateOrderError`), avant tout envoi, et est compté « duplicate ». *Faille trouvée par un test que j'avais d'abord écrit trop faiblement.* Un signal traité deux fois (reprise après plantage, republication par le moteur) ne repasse donc jamais d'ordre, et le même signal reste distinct d'un utilisateur à l'autre.
+
+### D94. Ce qui se retente et ce qui ne se retente pas
+Retenté : **prix indisponible** (source injoignable, symbole sans prix) et toute **erreur inattendue** chez un utilisateur (le signal reste en attente ; les utilisateurs déjà servis sont protégés par D93, seul celui qui manque est traité). Non retenté (le résultat serait le même) : score sous le seuil, périmé, `HOLD`, stablecoin, écart de prix, position au plafond, quantité trop petite, **capital non calculable** (un prix manque : on ne passe pas d'ordre à l'aveugle, D38).
+
+### D95. Vérification sur le vrai Redis (Streams), PostgreSQL et prix de Binance
+Comme aux étapes 6 à 10 : base temporaire, Redis n° 9, application complète. Constaté : achat PAPER proportionnel au score avec stop-loss programmé et signal tracé ; republication du même `id` sans effet ; `HOLD`, score trop bas et signal périmé ignorés ; messages invalides dans `signals:dead` ; vente de toute la position ; kill switch respecté ; groupe de consommateurs sans message en attente ni retard ; signal publié application arrêtée traité **une seule fois** au redémarrage.
+**Défaut trouvé par cette vérification, invisible aux tests unitaires :** `ioredis` 6 négocie **RESP3** par défaut ; dans ce protocole `XREADGROUP` renvoie une table que `call` aplatit en `[flux, entrées, …]`, alors que le code attendait les tableaux imbriqués de RESP2. L'analyse plantait (`TypeError`) à chaque message : les signaux n'étaient traités qu'environ une minute plus tard, par la reprise automatique. Les deux formes sont maintenant acceptées et testées (forme réellement observée sur Redis 8).
+*Non couvert :* aucun signal réel du moteur (il n'en émet pas) ; le chemin LIVE reste celui de D87 (aucun ordre réel passé).
+
+### D96. Limites
+Pas de réponse au moteur (il ne sait pas ce qu'il est advenu d'un signal) ; pas de réglage du seuil par utilisateur ; un seul groupe de consommateurs (`api`), plusieurs instances de l'API se partagent les messages mais chaque message n'est traité que par une ; les messages en attente sont repris après 60 s, donc un signal retenté a un délai minimal d'une minute (la péremption de 5 minutes borne les reprises utiles).
+
+---
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
@@ -370,7 +409,8 @@ Comme aux étapes 6 à 9, plus le vrai `ccxt` avec de **fausses clés** (aucun f
 | Purge des refresh tokens expirés | La table grossit ; tâche planifiée à prévoir. |
 | `trust proxy` en production | Voir D14. |
 | Mot de passe oublié, 2FA | Hors SPEC MVP. |
-| **Étape 11** : consommation des signaux | Voir D75 : lire le Redis Stream `signals`, définir leur format dans `docs/SPEC.md` (le moteur doit l'implémenter), dimensionner la position (`maxPositionValue`), puis `OrdersService.submit` avec l'origine `SIGNAL`. Rouvrir D83 si l'on veut des ordres manuels en LIVE. |
+| **Émission des signaux par `crypto-engine`** | Le moteur doit publier selon `docs/SPEC.md` section 7 (D88) ; il n'émet encore rien. Rouvrir D83 si l'on veut des ordres manuels en LIVE. |
+| Réglages de signaux par utilisateur | Voir D90 et D96 : seuil de score, écart de prix, péremption sont globaux (variables d'environnement). |
 | Essai sur le testnet Binance | Voir D87 : aucun ordre réel n'a été passé. À faire avec une clé testnet dédiée (jamais dans git) avant tout usage LIVE ; le testnet n'expose pas `apiRestrictions` (D20), la configuration devra être étendue aux ordres testnet. |
 | Ordres stop natifs sur la plateforme | Voir D84 : la protection actuelle est un contrôle par minute, sans effet si l'application est arrêtée ; un ordre stop posé côté plateforme protégerait aussi pendant une panne. |
 | Réconciliation périodique des soldes | Le portefeuille est déclaratif (D32) et diverge de la plateforme (frais, dépôts) : lire les soldes réels (`fetchBalance`) et signaler l'écart, ce qui permettrait aussi d'inclure les pertes dues aux ordres dans la perte journalière (D43). |

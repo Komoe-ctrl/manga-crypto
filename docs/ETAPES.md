@@ -426,3 +426,62 @@ File `orders` : 5 essais, délai exponentiel (2, 4, 8, 16 s), un ordre à la foi
 **Vérifier sur un vrai Redis** : procédure de l'étape 6, puis déclarer 10 000 USDT, passer `POST /api/orders` d'achat de `0.005` BTC (le statut passe de `PENDING` à `FILLED`), relever le stop-loss au-dessus du prix (`update trade_logs set "stopLossPrice" = 9999999 where side = 'BUY'`) et ajouter un job `check` à la file `order-exits` : une vente `STOP_LOSS` apparaît, le portefeuille est soldé, une notification critique est créée, et un second passage ne vend pas une seconde fois.
 
 **Pas encore fait** : consommation des signaux (étape 11), **essai sur le testnet Binance** (aucun ordre réel n'a été passé), ordres stop natifs, réconciliation des soldes, passerelle Kraken.
+## Étape 11 — Consommation des signaux
+
+**Livré** : `src/signals/` (`parseSignal`, `sizeBuy`, `SignalHandler`, `SignalConsumer`, `RedisSignalStream`, `SignalsModule`), le contrat des signaux dans `docs/SPEC.md` (section 7), l'outil d'essai `scripts/publish-signal.mjs` (`npm run signals:publish`), migration `unique_signal_per_user` (index unique `trade_logs(userId, signalStreamId)`). **Aucune dépendance ajoutée.** Aucune route nouvelle.
+
+### Fonctionnement
+
+Le moteur publie dans le Redis Stream `signals` (format : `docs/SPEC.md` section 7). L'API lit les messages (groupe `api`) et, pour chaque signal valide :
+
+| Signal | Effet |
+|---|---|
+| `HOLD`, score sous le seuil, périmé (> 5 min), stablecoin | Ignoré pour tout le monde |
+| `BUY` | Pour chaque utilisateur actif : achète la place disponible (exposition maximale − position détenue) proportionnellement au score |
+| `SELL` | Vend toute la position détenue du symbole |
+
+Chaque ordre passe par `OrdersService.submit` : mêmes garde-fous que tout ordre (D92), mode PAPER ou LIVE selon l'utilisateur. L'ordre porte l'identifiant du signal (`signalStreamId`) et son contenu (`signalPayload`), visibles dans `GET /api/orders` (origine `SIGNAL`).
+
+### Résultats par utilisateur
+
+| Résultat | Signification |
+|---|---|
+| `submitted` | Ordre créé (voir son statut : il peut être exécuté ou refusé plus tard) |
+| `rejected` | Ordre créé mais refusé par un garde-fou, enregistré avec son motif (ex. `insufficient_funds`) |
+| `duplicate` | Ce signal a déjà donné un ordre à cet utilisateur |
+| `robot_blocked` | Kill switch ou pause : rien n'est enregistré |
+| `below_min_score`, `no_capacity`, `too_small`, `no_position`, `price_drift`, `capital_unknown` | Aucun ordre (voir D91, D94) |
+| `price_unavailable` | Source de prix injoignable : le signal sera retenté |
+
+Chaque signal est journalisé en une ligne (`Signal <id> (BUY BTC, score 0.8) : {"submitted":1}`), sans le contenu des ordres.
+
+### Réglages (variables d'environnement, facultatives)
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `SIGNAL_MIN_SCORE` | `0.6` | Score minimal pour agir |
+| `SIGNAL_MAX_AGE_SECONDS` | `300` | Un signal plus ancien est ignoré |
+| `SIGNAL_MAX_PRICE_DRIFT_PCT` | `2` | Un achat est ignoré si le prix a bougé de plus de ce % |
+
+`BACKGROUND_JOBS_ENABLED=false` désactive aussi la consommation des signaux (aucune connexion Redis).
+
+### Essayer sans le moteur
+
+```bash
+npm run db:up                                   # PostgreSQL + Redis
+npm run start:dev                               # l'API consomme le stream
+# Déclarer un capital en USDT (PUT /api/portfolio/assets/USDT), puis publier :
+npm run signals:publish -- --symbol BTC --action BUY --score 0.8
+npm run signals:publish -- --symbol BTC --action SELL --score 0.9
+npm run signals:publish -- --symbol BTC --action BUY --score 0.8 --id mon-id   # republier le même id : sans effet
+npm run signals:publish -- --raw '{oups'                                       # message invalide → signals:dead
+```
+Options : `--symbol`, `--action`, `--score`, `--price`, `--reason`, `--id`, `--ts`, `--age-seconds`, `--raw`, `--redis`. L'URL de Redis vient de `--redis`, sinon de `REDIS_URL`, sinon `redis://localhost:6379`.
+
+### Diagnostiquer
+
+- **Messages refusés** : `XRANGE signals:dead - +` (champs `reason`, `entry`, `raw`). Motifs : `missing_data`, `too_large`, `invalid_json`, `not_an_object`, `unsupported_version`, `invalid_id`, `invalid_ts`, `ts_in_future`, `invalid_symbol`, `invalid_action`, `invalid_score`, `invalid_price`, `invalid_reason`, `invalid_indicators`, `handler_failed` (5 livraisons sans succès).
+- **Retard ou messages bloqués** : `XINFO GROUPS signals` (`pending`, `lag`) et `XPENDING signals api`.
+- **Un signal n'a pas donné d'ordre** : chercher son `id` dans les journaux (résultat par utilisateur) puis dans `GET /api/orders` (`signalStreamId`).
+
+**Pas encore fait** : émission des signaux par `crypto-engine`, réglages par utilisateur, essai sur le testnet Binance (l'ordre LIVE réel reste jamais exercé, voir étape 10).

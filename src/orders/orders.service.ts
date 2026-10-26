@@ -33,7 +33,11 @@ import {
   toPair,
   type RejectionReason,
 } from './order-rules.js';
-import type { OrderIntent, OrderView } from './orders.types.js';
+import {
+  DuplicateOrderError,
+  type OrderIntent,
+  type OrderView,
+} from './orders.types.js';
 
 const D = (value: Prisma.Decimal | string | number) =>
   new Prisma.Decimal(value);
@@ -70,23 +74,37 @@ export class OrdersService {
     if (!user) throw new NotFoundException();
 
     const rejection = await this.check(userId, user.tradingMode, intent);
-    const row = await this.prisma.tradeLog.create({
-      data: {
-        userId,
-        clientOrderId: newClientOrderId(),
-        mode: user.tradingMode,
-        symbol: toPair(intent.symbol),
-        side: intent.side,
-        type: OrderType.MARKET,
-        quantity: intent.quantity,
-        origin: intent.origin,
-        parentOrderId: intent.parentOrderId,
-        signalStreamId: intent.signalStreamId,
-        signalPayload: intent.signalPayload,
-        status: rejection ? OrderStatus.REJECTED : OrderStatus.PENDING,
-        failureReason: rejection,
-      },
-    });
+    let row: TradeLog;
+    try {
+      row = await this.prisma.tradeLog.create({
+        data: {
+          userId,
+          clientOrderId: newClientOrderId(),
+          mode: user.tradingMode,
+          symbol: toPair(intent.symbol),
+          side: intent.side,
+          type: OrderType.MARKET,
+          quantity: intent.quantity,
+          origin: intent.origin,
+          parentOrderId: intent.parentOrderId,
+          signalStreamId: intent.signalStreamId,
+          signalPayload: intent.signalPayload,
+          status: rejection ? OrderStatus.REJECTED : OrderStatus.PENDING,
+          failureReason: rejection,
+        },
+      });
+    } catch (error) {
+      // Un signal ne passe qu'un ordre par utilisateur (contrainte unique) : le second traitement simultané échoue ici,
+      // avant tout envoi, au lieu de doubler la position.
+      if (
+        intent.signalStreamId &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new DuplicateOrderError();
+      }
+      throw error;
+    }
 
     await this.audit.log({
       userId,
