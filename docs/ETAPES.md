@@ -685,3 +685,44 @@ Ne change pas : les garde-fous, les ordres manuels en PAPER, le suivi du portefe
 `npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : OK. Vérification sur l'application complète : voir D115.
 
 **Pas encore fait** : service worker et écran d'abonnement Push côté `crypto-web`, confirmation de l'adresse email, essai testnet Binance, la suite du produit (voir la question de produit dans `docs/DECISIONS.md`, « À prévoir »).
+
+
+## Étape 21 : tendances du marché
+
+**Livré** : `GET /api/portfolio/trends` (authentifié), pour que le front affiche les courbes de 7 jours, la variation sur 24 h et l'état du marché de la maquette. Les décisions sont dans D116 à D119.
+
+### Réponse
+
+```json
+{
+  "market": { "state": "CALM", "btcChange24hPct": "-1.01" },
+  "assets": [
+    { "symbol": "BTC", "change24hPct": "-1.01", "change7dPct": "-2.38",
+      "sparkline": ["81936", "...", "79986.01"] }
+  ],
+  "complete": true
+}
+```
+
+| Champ | Sens |
+|---|---|
+| `market.state` | `UP` (BTC ≥ +2 % sur 24 h), `DOWN` (≤ −2 %), `CALM`, ou `null` si le BTC est injoignable. **Descriptif, pas un signal de trading.** |
+| `assets[].change24hPct` | Variation sur 24 h en %, `null` si moins de 25 clôtures horaires ou source indisponible |
+| `assets[].change7dPct` | Variation sur 7 jours en %, `null` sans une semaine complète de données |
+| `assets[].sparkline` | Au plus 42 prix (chaînes décimales), du plus ancien au plus récent ; vide si indisponible |
+| `complete` | `false` si une courbe manque (source en panne, actif inconnu, plus de 30 actifs) |
+
+Les actifs de la réponse sont ceux **détenus**, hors stablecoins. Aucune variable d'environnement nouvelle.
+
+### Diagnostiquer
+
+- **`complete: false`** : au moins un actif est vide. Un actif absent de Binance (paire `<SYMBOLE>USDT` inconnue) est normal ; si tous le sont, la plateforme est injoignable ou limite les requêtes.
+- **`change7dPct: null`** : l'actif est coté depuis moins de 7 jours. Ce n'est pas une panne.
+- **`market.state: null`** : le BTC n'a pas pu être lu.
+- **Un chiffre « figé »** : la lecture est mise en cache 5 minutes.
+
+### Vérifications
+
+`npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : voir la PR. Vérification contre le vrai Binance : D119.
+
+**Pas encore fait** : l'affichage dans `crypto-web` (étape 22).

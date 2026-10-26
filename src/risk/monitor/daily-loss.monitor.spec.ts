@@ -20,6 +20,7 @@ async function build(timezone = 'UTC') {
   const market: Record<string, number | null> = { BTC: 100, ETH: 10 };
   let down = false;
   const provider = {
+    getHourlyCloses: vi.fn(async () => null),
     getPriceAt: vi.fn(async () => null),
     getPrices: vi.fn(async (symbols: string[]) => {
       if (down) throw new PriceUnavailableError();

@@ -9,6 +9,8 @@ const INVALID_SYMBOL = -1121;
 /** Au-delà de 5 minutes d'écart, la bougie renvoyée n'est pas celle de la date demandée. */
 const MAX_CANDLE_GAP_MS = 5 * 60_000;
 const HISTORY_TTL_MS = 5 * 60_000;
+/** 7 jours de bougies d'une heure : une requête (7 jours = 168 bougies, sous la limite de 1000 de Binance). */
+const MAX_SERIES_HOURS = 168;
 const HISTORY_MAX_ENTRIES = 500;
 const TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = 15_000;
@@ -26,6 +28,10 @@ type Tickers = Map<string, Prisma.Decimal>;
 export class BinancePriceProvider extends PriceProvider {
   private cache: { at: number; tickers: Tickers } | null = null;
   private inFlight: Promise<Tickers> | null = null;
+  private readonly series = new Map<
+    string,
+    { closes: Prisma.Decimal[] | null; expires: number }
+  >();
   private readonly history = new Map<
     string,
     { price: Prisma.Decimal | null; expires: number }
@@ -65,6 +71,59 @@ export class BinancePriceProvider extends PriceProvider {
     const price = await this.fetchPriceAt(symbol, minute);
     this.remember(key, price);
     return price;
+  }
+
+  /**
+   * Clôtures des bougies d'une heure de la paire `<SYMBOLE>USDT` (`/api/v3/klines`, public). La dernière bougie est
+   * celle de l'heure en cours : sa « clôture » est le prix du moment. Mise en cache 5 minutes par symbole et durée,
+   * absence de donnée comprise.
+   */
+  async getHourlyCloses(
+    symbol: string,
+    hours: number,
+  ): Promise<Prisma.Decimal[] | null> {
+    if (STABLECOINS.has(symbol)) return null; // 1 USD fixe : une courbe plate n'apprend rien
+    const limit = Math.min(Math.max(Math.trunc(hours), 1), MAX_SERIES_HOURS);
+    const key = `${symbol}:${limit}`;
+    const cached = this.series.get(key);
+    if (cached && cached.expires > Date.now()) return cached.closes;
+
+    const closes = await this.fetchHourlyCloses(symbol, limit);
+    if (this.series.size >= HISTORY_MAX_ENTRIES) this.series.clear();
+    this.series.set(key, { closes, expires: Date.now() + HISTORY_TTL_MS });
+    return closes;
+  }
+
+  private async fetchHourlyCloses(
+    symbol: string,
+    limit: number,
+  ): Promise<Prisma.Decimal[] | null> {
+    let response: Response;
+    try {
+      response = await fetch(
+        `${KLINES_URL}?symbol=${encodeURIComponent(symbol)}USDT&interval=1h&limit=${limit}`,
+        { signal: AbortSignal.timeout(TIMEOUT_MS) },
+      );
+    } catch {
+      throw new PriceUnavailableError();
+    }
+
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      if ((body as { code?: number } | null)?.code === INVALID_SYMBOL)
+        return null;
+      throw new PriceUnavailableError();
+    }
+    if (!Array.isArray(body)) throw new PriceUnavailableError();
+
+    const closes: Prisma.Decimal[] = [];
+    for (const candle of body as unknown[]) {
+      // [ouverture, open, high, low, close, …] : une bougie illisible ou à prix nul est ignorée, pas fatale.
+      const close = Array.isArray(candle) ? candle[4] : null;
+      if (typeof close === 'string' && Number(close) > 0)
+        closes.push(new Prisma.Decimal(close));
+    }
+    return closes.length > 0 ? closes : null;
   }
 
   private async fetchPriceAt(

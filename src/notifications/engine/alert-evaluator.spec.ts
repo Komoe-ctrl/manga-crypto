@@ -40,6 +40,7 @@ async function build() {
         symbols.map((s) => [s, state.now[s] == null ? null : D(state.now[s]!)]),
       );
     }),
+    getHourlyCloses: vi.fn(async () => null),
     getPriceAt: vi.fn(async (symbol: string, _at: Date) => {
       if (state.pastDown) throw new PriceUnavailableError();
       return state.past[symbol] == null ? null : D(state.past[symbol]!);
