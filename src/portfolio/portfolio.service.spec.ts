@@ -34,6 +34,7 @@ function build(prices?: () => Promise<Map<string, Prisma.Decimal | null>>) {
   const portfolio = new PortfolioService(asPrisma, new AuditService(asPrisma));
   const provider = {
     getPrices: vi.fn(prices ?? (async () => new Map())),
+    getHourlyCloses: vi.fn(async () => null),
     getPriceAt: vi.fn(async () => null),
   } satisfies PriceProvider;
   return {

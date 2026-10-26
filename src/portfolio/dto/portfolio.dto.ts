@@ -112,3 +112,51 @@ export class PortfolioDto {
   })
   complete: boolean;
 }
+
+export class AssetTrendDto {
+  @ApiProperty({ example: 'BTC' }) symbol: string;
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    example: '-1.35',
+    description:
+      'Variation sur 24 h, en % ; null si la source est indisponible ou si l’actif est coté depuis moins de 24 h',
+  })
+  change24hPct: string | null;
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    example: '4.2',
+    description:
+      'Variation sur 7 jours, en % ; null sans une semaine complète de données',
+  })
+  change7dPct: string | null;
+  @ApiProperty({
+    type: [String],
+    description:
+      'Prix de clôture horaires (au plus 42 points, du plus ancien au plus récent) ; vide si indisponible',
+  })
+  sparkline: string[];
+}
+
+export class MarketDto {
+  @ApiProperty({
+    enum: ['UP', 'DOWN', 'CALM'],
+    nullable: true,
+    description:
+      'Indicateur descriptif d’après le BTC sur 24 h (±2 %) ; ce n’est pas un signal de trading. Null si indisponible',
+  })
+  state: 'UP' | 'DOWN' | 'CALM' | null;
+  @ApiProperty({ nullable: true, type: String, example: '0.8' })
+  btcChange24hPct: string | null;
+}
+
+export class TrendsDto {
+  @ApiProperty({ type: MarketDto }) market: MarketDto;
+  @ApiProperty({ type: [AssetTrendDto] }) assets: AssetTrendDto[];
+  @ApiProperty({
+    description:
+      'Faux si une courbe est indisponible pour au moins un actif (réponse partielle)',
+  })
+  complete: boolean;
+}

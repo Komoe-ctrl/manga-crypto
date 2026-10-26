@@ -27,6 +27,14 @@ describe('Portfolio (e2e)', () => {
               s === 'BTC' ? new Prisma.Decimal(70000) : null,
             ]),
           ),
+        // 168 clôtures horaires de 100 à 110 pour le BTC ; les autres actifs sont inconnus de la source.
+        getHourlyCloses: async (symbol: string) =>
+          symbol === 'BTC'
+            ? Array.from(
+                { length: 168 },
+                (_, i) => new Prisma.Decimal(100 + (10 * i) / 167),
+              )
+            : null,
       })
       .compile();
     app = moduleRef.createNestApplication();
@@ -171,6 +179,56 @@ describe('Portfolio (e2e)', () => {
       .delete('/api/portfolio/assets/BTC')
       .set('Authorization', auth)
       .expect(404);
+  });
+
+  it('exige une authentification pour les tendances', async () => {
+    await http().get('/api/portfolio/trends').expect(401);
+  });
+
+  it('donne variations, courbe et état du marché de ses actifs', async () => {
+    const auth = await login();
+    await http()
+      .put('/api/portfolio/assets/BTC')
+      .set('Authorization', auth)
+      .send({ quantity: '1', avgBuyPrice: '100' })
+      .expect(200);
+
+    const res = await http()
+      .get('/api/portfolio/trends')
+      .set('Authorization', auth)
+      .expect(200);
+
+    expect(res.body.complete).toBe(true);
+    expect(res.body.market.state).toBe('CALM');
+    expect(res.body.assets).toHaveLength(1);
+    expect(res.body.assets[0]).toMatchObject({
+      symbol: 'BTC',
+      change7dPct: '10',
+    });
+    expect(res.body.assets[0].sparkline).toHaveLength(42);
+    expect(typeof res.body.assets[0].sparkline[0]).toBe('string');
+  });
+
+  it('un actif inconnu de la source : réponse partielle, pas une erreur', async () => {
+    const auth = await login();
+    await http()
+      .put('/api/portfolio/assets/XYZ')
+      .set('Authorization', auth)
+      .send({ quantity: '5', avgBuyPrice: '10' })
+      .expect(200);
+
+    const res = await http()
+      .get('/api/portfolio/trends')
+      .set('Authorization', auth)
+      .expect(200);
+    expect(res.body.complete).toBe(false);
+    expect(res.body.assets[0]).toEqual({
+      symbol: 'XYZ',
+      change24hPct: null,
+      change7dPct: null,
+      sparkline: [],
+    });
+    expect(res.body.market.state).toBe('CALM'); // le BTC, lui, est connu
   });
 
   it('isole les utilisateurs', async () => {

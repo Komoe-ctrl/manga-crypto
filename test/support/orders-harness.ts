@@ -110,6 +110,7 @@ export async function buildOrders({
         symbols.map((s) => [s, market[s] == null ? null : D(market[s]!)]),
       );
     }),
+    getHourlyCloses: vi.fn(async () => null),
     getPriceAt: vi.fn(async (_symbol: string, _at: Date) => null),
   };
 

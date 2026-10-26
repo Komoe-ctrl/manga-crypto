@@ -494,6 +494,24 @@ Les deux n'acceptent que la valeur exacte `true` (`TRUE`, `1`, `yes`, ` true` ne
 *Non couvert :* le chemin `SIGNALS_ALLOW_LIVE=true` n'est vérifié que par les tests unitaires (jamais d'ordre LIVE réel, voir D87).
 *Limite :* le moteur, s'il tourne, continue de publier : le stream est borné (10 000 messages) donc sans risque, mais autant ne pas le démarrer. Son arrêt par défaut (`SCANNER_ENABLED`) est une décision du dépôt `crypto-engine`, non prise ici.
 
+## Étape 21 : tendances du marché (variations, courbes)
+
+### D116. Un endpoint de lecture, sans table d'historique
+**Pourquoi.** La maquette du front montre une courbe de 7 jours et une variation sur 24 h par actif, et un état du marché ; l'API n'exposait que le prix du moment. `GET /api/portfolio/trends` les donne pour les actifs **détenus** : `change24hPct`, `change7dPct`, `sparkline` (au plus 42 clôtures horaires, du plus ancien au plus récent, la dernière étant le prix du moment) et `market`.
+**Source.** Comme pour les alertes (D36), les bougies publiques de Binance (`/api/v3/klines`, sans clé), mais en **une heure** : `PriceProvider.getHourlyCloses(symbole, heures)`, 168 bougies = 7 jours en une requête par actif. Aucune table à maintenir ; cache mémoire de 5 minutes par symbole et durée (absence de donnée comprise ; une **panne** n'est jamais mise en cache). Les stablecoins n'ont pas de courbe (1 USD fixe).
+**Calculs** (`trends-math.ts`, `Decimal`, jamais de flottant) : 24 h = dernière clôture contre celle d'il y a 24 bougies (exige 25 clôtures) ; 7 jours = contre la première de **168** (exige la semaine complète : un actif coté depuis trois jours n'a **pas** de « 7 jours », ce serait un faux chiffre). Pourcentages arrondis à 2 décimales, renvoyés en chaînes. La courbe garde le premier **et** le dernier point (elle finit sur le prix du moment).
+
+### D117. Dégradation : réponse partielle, jamais une erreur
+Même principe que la valorisation. Un actif sans données (source en panne, actif inconnu de Binance) est renvoyé **vide** (variations `null`, courbe vide) et `complete` passe à `false`. Une erreur qui n'est pas une panne de prix remonte (un vrai bug n'est pas masqué). Au plus **30 actifs** par réponse (une requête de bougies chacun) : au-delà, les suivants sont ignorés et `complete` vaut `false`.
+
+### D118. État du marché : descriptif, pas un signal
+`market.state` vaut `UP` (BTC ≥ +2 % sur 24 h), `DOWN` (≤ −2 %) ou `CALM` ; `null` si le BTC est injoignable (on ne devine pas). Le BTC est lu **même si l'utilisateur n'en détient pas**, sans apparaître dans ses actifs. **Ce n'est pas un signal d'achat ni de vente** : le backtest du projet n'a démontré aucun avantage des indicateurs (D114) ; l'indicateur dit seulement si la journée est agitée. Le seuil de ±2 % est un choix simple et documenté, pas un résultat d'étude.
+
+### D119. Vérification et limites
+**Contre le vrai Binance** (application complète, base de développement) : 849 ms au premier appel, 22 ms au second (cache) ; BTC et ETH avec 42 points chacun, variations 24 h et 7 jours cohérentes, courbe qui **finit sur le prix de la valorisation** (79 986,01 contre 79 986) ; état du marché `CALM` pour un BTC à −1,01 % sur 24 h.
+Les doubles de test existants (sept fichiers) ont reçu la nouvelle méthode du fournisseur de prix.
+*Limites :* cache en mémoire, perdu au redémarrage et non partagé entre instances (voir « Cache Redis » ci-dessous) ; la variation 24 h compare des clôtures horaires (au plus une heure d'écart avec « il y a 24 h pile ») ; une seule source (Binance).
+
 ---
 
 ## À prévoir (hors étapes livrées)
@@ -516,7 +534,7 @@ Les deux n'acceptent que la valeur exacte `true` (`TRUE`, `1`, `yes`, ` true` ne
 | Rapport du matin : « Hier » | Voir D67 : le front lit le rapport `TODAY` précédent ; l'enum `YESTERDAY` est inutilisé. À retirer lors d'une prochaine migration du schéma. |
 | Purge des anciens rapports | La table `digest_reports` grossit d'une ligne par jour et par utilisateur (plus une par semaine). |
 | Alertes : valeur de la dernière évaluation | L'API n'expose pas le prix observé ni l'écart au seuil (« ETH à ~2,5 % de votre seuil », maquette) ; à ajouter si le front en a besoin. |
-| Cache Redis des prix et de l'historique | Voir D36 : les prix passés sont aujourd'hui en mémoire (perdus au redémarrage, non partagés entre instances). |
+| Cache Redis des prix et de l'historique | Voir D36 et D119 : les prix passés et les séries horaires des tendances sont aujourd'hui en mémoire (perdus au redémarrage, non partagés entre instances). |
 | Confirmation de l'adresse email de notification | Voir D111 : à faire avant d'ouvrir l'inscription publique ; sans elle, une adresse non vérifiée peut recevoir des messages. |
 | Service worker et écran d'abonnement du front | Le Push n'atteindra personne tant que crypto-web n'a pas de service worker ni de bouton d'abonnement (SPEC section 9). |
 | Vérifier le Push avec un vrai navigateur | Voir D112 : le chiffrement et la signature sont vérifiés, mais aucun vrai service Push (Chrome, Firefox, Safari) n'a été essayé. |

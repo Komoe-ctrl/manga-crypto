@@ -19,7 +19,9 @@ import {
   RecordTransactionDto,
   SetAssetDto,
   TransactionResultDto,
+  TrendsDto,
 } from './dto/portfolio.dto.js';
+import { PortfolioTrendsService } from './portfolio-trends.service.js';
 import { PortfolioValuationService } from './portfolio-valuation.service.js';
 import { PortfolioService } from './portfolio.service.js';
 import { SymbolPipe } from './symbol.pipe.js';
@@ -31,6 +33,7 @@ export class PortfolioController {
   constructor(
     private readonly portfolio: PortfolioService,
     private readonly valuation: PortfolioValuationService,
+    private readonly trends: PortfolioTrendsService,
   ) {}
 
   /** Positions valorisées en USD. Si les prix sont indisponibles : `complete: false`, valeurs `null`. */
@@ -38,6 +41,16 @@ export class PortfolioController {
   @ApiOkResponse({ type: PortfolioDto })
   get(@CurrentUser() user: AuthUser) {
     return this.valuation.valuate(user.id);
+  }
+
+  /**
+   * Variation sur 24 h et 7 jours, courbe et état du marché. Une source de prix en panne donne une réponse partielle
+   * (`complete: false`), pas une erreur.
+   */
+  @Get('trends')
+  @ApiOkResponse({ type: TrendsDto })
+  getTrends(@CurrentUser() user: AuthUser) {
+    return this.trends.trends(user.id);
   }
 
   /** Achat ou vente déclaré : met à jour la quantité et le prix moyen. */

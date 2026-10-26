@@ -17,6 +17,17 @@ export abstract class PriceProvider {
    * @throws PriceUnavailableError si la source est injoignable.
    */
   abstract getPriceAt(symbol: string, at: Date): Promise<Prisma.Decimal | null>;
+
+  /**
+   * Prix de clôture horaires des `hours` dernières heures (au plus 168), du plus ancien au plus récent ; le dernier est
+   * le prix du moment. Sert aux variations et aux courbes. `null` si la source ne connaît pas l'actif ; la série peut
+   * être plus courte que demandé pour un actif récemment coté.
+   * @throws PriceUnavailableError si la source est injoignable.
+   */
+  abstract getHourlyCloses(
+    symbol: string,
+    hours: number,
+  ): Promise<Prisma.Decimal[] | null>;
 }
 
 export class PriceUnavailableError extends Error {
