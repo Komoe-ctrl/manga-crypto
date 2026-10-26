@@ -416,7 +416,10 @@ describe('SignalHandler', () => {
     });
 
     it('un signal ne contourne jamais les ordres : mode LIVE → ordre LIVE en attente d’exécution, pas de restriction manuelle', async () => {
-      const { h, handle } = await build({}, { dispatch: 'manual' });
+      const { h, handle } = await build(
+        { SIGNALS_ALLOW_LIVE: 'true' },
+        { dispatch: 'manual' },
+      );
       await h.fund(10_000);
       h.goLive();
       expect((await handle()).outcomes).toEqual({ submitted: 1 });
@@ -426,6 +429,84 @@ describe('SignalHandler', () => {
         origin: 'SIGNAL',
       });
       expect(h.gateway.findCalls).toBe(0); // rien n'est parti tant que l'exécuteur n'a pas pris l'ordre
+    });
+  });
+
+  describe('verrou LIVE (SIGNALS_ALLOW_LIVE)', () => {
+    it('par défaut, un signal ne passe jamais d’ordre pour un utilisateur en mode LIVE', async () => {
+      const { h, handle } = await build({}, { dispatch: 'manual' });
+      await h.fund(10_000);
+      h.goLive();
+
+      const summary = await handle();
+
+      expect(summary.outcomes).toEqual({ live_not_allowed: 1 });
+      expect(summary.retry).toBe(false); // ce n'est pas un incident : rien à retenter
+      expect(orders(h)).toHaveLength(0); // et aucun ordre « refusé » n'est enregistré (ce serait du bruit)
+    });
+
+    it('le verrou vaut aussi pour une vente : on ne sort pas non plus sur signal en LIVE', async () => {
+      const { h, handle } = await build({}, { dispatch: 'manual' });
+      await h.fund(10_000);
+      await h.hold('BTC', 1, 90); // une position à vendre
+      h.goLive();
+      const summary = await handle(signal({ action: 'SELL', id: 'sig-sell' }));
+      expect(summary.outcomes).toEqual({ live_not_allowed: 1 });
+      expect(orders(h)).toHaveLength(0);
+    });
+
+    it('avec SIGNALS_ALLOW_LIVE=true, le signal passe par les garde-fous habituels', async () => {
+      const { h, handle } = await build(
+        { SIGNALS_ALLOW_LIVE: 'true' },
+        { dispatch: 'manual' },
+      );
+      await h.fund(10_000);
+      h.goLive();
+      expect((await handle()).outcomes).toEqual({ submitted: 1 });
+      expect(orders(h)[0]).toMatchObject({ mode: 'LIVE', origin: 'SIGNAL' });
+    });
+
+    it.each(['yes', 'TRUE', 'True', '1', 'on', ' true', 'false', ''])(
+      'seule la valeur exacte « true » active : %j reste verrouillé',
+      async (value) => {
+        const { h, handle } = await build(
+          { SIGNALS_ALLOW_LIVE: value },
+          { dispatch: 'manual' },
+        );
+        await h.fund(10_000);
+        h.goLive();
+        expect((await handle()).outcomes).toEqual({ live_not_allowed: 1 });
+        expect(orders(h)).toHaveLength(0);
+      },
+    );
+
+    it('le mode PAPER n’est pas concerné : le verrou ne gêne pas la simulation', async () => {
+      const { h, handle } = await build();
+      await h.fund(10_000);
+      expect((await handle()).outcomes).toEqual({ submitted: 1 });
+      expect(orders(h)[0]).toMatchObject({ mode: 'PAPER' });
+    });
+
+    it('un utilisateur LIVE verrouillé ne gêne pas un utilisateur PAPER', async () => {
+      const { h, handle } = await build({}, { dispatch: 'manual' });
+      await h.fund(10_000);
+      const paper = await h.prisma.user.create({
+        data: { email: 'paper@example.com', passwordHash: 'x' },
+        select: { id: true },
+      });
+      await h.portfolio.setAsset(
+        paper.id,
+        'USDT',
+        { quantity: '10000', avgBuyPrice: '1' },
+        {},
+      );
+      h.goLive(); // le premier utilisateur passe en LIVE
+
+      const summary = await handle();
+
+      expect(summary.outcomes).toEqual({ live_not_allowed: 1, submitted: 1 });
+      expect(orders(h)).toHaveLength(1);
+      expect(orders(h)[0]).toMatchObject({ mode: 'PAPER', userId: paper.id });
     });
   });
 

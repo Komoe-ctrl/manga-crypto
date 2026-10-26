@@ -463,13 +463,13 @@ Chaque signal est journalisé en une ligne (`Signal <id> (BUY BTC, score 0.8) : 
 | `SIGNAL_MAX_AGE_SECONDS` | `300` | Un signal plus ancien est ignoré |
 | `SIGNAL_MAX_PRICE_DRIFT_PCT` | `2` | Un achat est ignoré si le prix a bougé de plus de ce % |
 
-`BACKGROUND_JOBS_ENABLED=false` désactive aussi la consommation des signaux (aucune connexion Redis).
+`BACKGROUND_JOBS_ENABLED=false` désactive aussi la consommation des signaux (aucune connexion Redis). **Depuis l'étape 17, la consommation est désactivée par défaut** (`SIGNALS_ENABLED=true` pour l'activer) et ne passe aucun ordre LIVE sans `SIGNALS_ALLOW_LIVE=true`.
 
 ### Essayer sans le moteur
 
 ```bash
 npm run db:up                                   # PostgreSQL + Redis
-npm run start:dev                               # l'API consomme le stream
+SIGNALS_ENABLED=true npm run start:dev         # l'API consomme le stream (désactivé par défaut depuis l'étape 17)
 # Déclarer un capital en USDT (PUT /api/portfolio/assets/USDT), puis publier :
 npm run signals:publish -- --symbol BTC --action BUY --score 0.8
 npm run signals:publish -- --symbol BTC --action SELL --score 0.9
@@ -650,3 +650,38 @@ En production, utilisez le SMTP d'un fournisseur (port 587, STARTTLS, identifian
 `npm run typecheck`, `npm test`, `npm run test:e2e` (nouveaux scénarios dans `test/notifications.e2e-spec.ts`), `npm run lint` : OK. Vérification sur l'application complète : voir D112.
 
 **Pas encore fait** : service worker et écran d'abonnement côté `crypto-web`, confirmation de l'adresse email, essai avec un vrai navigateur.
+
+---
+
+## Étape 17 : le moteur ne peut plus alimenter un compte par accident
+
+**Livré** : deux verrous, indépendants, qui rendent le trading automatique par signaux **inactif par défaut**, suite au verdict du backtest (la stratégie du moteur n'a pas d'avantage démontrable, voir `crypto-engine/docs/BACKTEST.md`). Choix et vérification : `docs/DECISIONS.md` (D114, D115). **Aucune dépendance, aucune migration.**
+
+| Variable | Défaut | Effet |
+|---|---|---|
+| `SIGNALS_ENABLED` | absent (désactivé) | `true` : l'API consomme le Redis Stream `signals`. Sinon, aucun consommateur n'est créé (le journal l'indique au démarrage). |
+| `SIGNALS_ALLOW_LIVE` | absent (verrouillé) | `true` : un signal peut passer un ordre pour un utilisateur en mode LIVE. Sinon, résultat `live_not_allowed`, aucun ordre. |
+
+Seule la valeur exacte `true` active ; toute autre valeur (`TRUE`, `1`, `yes`, vide) laisse le verrou fermé.
+
+### Ce que cela change, concrètement
+
+| Situation | Avant | Maintenant |
+|---|---|---|
+| API et moteur démarrés, rien configuré | Des ordres PAPER ou LIVE selon le mode de chaque utilisateur | **Aucun ordre** : les signaux restent dans le stream, jamais lus |
+| `SIGNALS_ENABLED=true`, utilisateur PAPER | Ordre PAPER | Ordre PAPER (inchangé : on peut observer sans risque) |
+| `SIGNALS_ENABLED=true`, utilisateur LIVE | Ordre LIVE | **Aucun ordre** (`live_not_allowed`) tant que `SIGNALS_ALLOW_LIVE=true` n'est pas posé |
+
+Ne change pas : les garde-fous, les ordres manuels en PAPER, le suivi du portefeuille, la gestion des risques, le rapport du matin, les notifications, le WebSocket.
+
+### Diagnostiquer
+
+- **Rien ne se passe après avoir publié un signal** : chercher dans les journaux « Consommation des signaux désactivée » ; `XINFO GROUPS signals` ne renvoie aucun groupe tant que le consommateur n'existe pas.
+- **Un utilisateur LIVE ne reçoit rien** : le journal indique `{"live_not_allowed":1}` ; c'est le verrou, pas une panne. Aucun ordre refusé n'est enregistré.
+- **À l'activation** : les signaux restés dans le stream et de moins de 5 minutes sont traités ; les plus vieux sont ignorés (péremption, D90).
+
+### Vérifications
+
+`npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : OK. Vérification sur l'application complète : voir D115.
+
+**Pas encore fait** : service worker et écran d'abonnement Push côté `crypto-web`, confirmation de l'adresse email, essai testnet Binance, la suite du produit (voir la question de produit dans `docs/DECISIONS.md`, « À prévoir »).

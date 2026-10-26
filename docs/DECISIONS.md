@@ -478,6 +478,24 @@ Aucune confirmation de l'adresse email (D111) ; liste blanche à entretenir (D10
 
 ---
 
+## Étape 17 : le moteur ne peut plus alimenter un compte par accident
+
+### D114. Consommation des signaux opt-in, et verrou LIVE indépendant
+**Pourquoi.** Le backtest du moteur (étapes 14 et 16 de `crypto-engine`) a conclu que sa stratégie n'a pas d'avantage démontrable : 9 variantes sur 36 mois, aucune ne réussit le protocole (voir `crypto-engine/docs/BACKTEST.md`). Tel quel, il suffisait de démarrer l'API et le moteur pour que des signaux déclenchent des ordres, et en LIVE de vrais ordres. Un système qui perd de l'argent en moyenne ne doit pas être actif par défaut.
+**Deux verrous, indépendants et conservateurs :**
+- `SIGNALS_ENABLED` : **désactivé par défaut**. Sans lui, le consommateur n'est pas créé (aucune connexion Redis dédiée, aucun groupe de consommateurs) ; l'API l'écrit au démarrage dans ses journaux pour que « pourquoi rien ne se passe ? » ait une réponse.
+- `SIGNALS_ALLOW_LIVE` : **même activé**, un signal ne passe aucun ordre pour un utilisateur en mode LIVE (résultat `live_not_allowed`). Le mode PAPER n'est pas concerné : la chaîne complète reste utilisable pour **observer sans risque**.
+Les deux n'acceptent que la valeur exacte `true` (`TRUE`, `1`, `yes`, ` true` ne comptent pas) : en cas de faute de frappe, le verrou reste fermé. Un ordre refusé par ce verrou **n'est pas enregistré** (comme pour un robot arrêté) : ce serait du bruit à chaque signal. Le verrou vaut aussi pour les ventes : on ne sort pas non plus sur signal en LIVE.
+**Ce qui ne change pas :** le code de consommation, les garde-fous (kill switch, pause, exposition, fonds), les ordres manuels en PAPER (D83), le suivi du portefeuille, la gestion des risques, le rapport du matin, les notifications, le WebSocket. Tout se rallume par une variable d'environnement, sans migration ni redéploiement de code.
+**À savoir à l'activation :** les signaux publiés pendant que la consommation était désactivée restent dans le stream ; à l'activation, ceux de **moins de 5 minutes** (péremption, D90) sont traités, les plus vieux sont ignorés. Vérifié : un signal publié 20 secondes avant l'activation a bien donné un ordre PAPER.
+
+### D115. Vérification et limites
+**Sur la vraie stack** (PostgreSQL, Redis, application complète) : par défaut, un signal publié ne déclenche aucun ordre, reste dans le stream (jamais lu) et aucun groupe de consommateurs n'existe ; avec `SIGNALS_ENABLED=true`, un utilisateur PAPER reçoit son ordre ; un utilisateur en mode LIVE (basculé en base pour l'essai) ne reçoit **aucun ordre**, le journal montre `{"live_not_allowed":1}` et le message est acquitté (rien en attente).
+*Non couvert :* le chemin `SIGNALS_ALLOW_LIVE=true` n'est vérifié que par les tests unitaires (jamais d'ordre LIVE réel, voir D87).
+*Limite :* le moteur, s'il tourne, continue de publier : le stream est borné (10 000 messages) donc sans risque, mais autant ne pas le démarrer. Son arrêt par défaut (`SCANNER_ENABLED`) est une décision du dépôt `crypto-engine`, non prise ici.
+
+---
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
