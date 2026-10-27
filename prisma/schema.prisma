@@ -136,6 +136,7 @@ model User {
   riskSettings         RiskSettings?
   exchangeConfigs      ExchangeConfig[]
   assets               Asset[]
+  portfolioOperations  PortfolioOperation[]
   tradeLogs            TradeLog[]
   alertConfigs         AlertConfig[]
   digestReports        DigestReport[]
@@ -317,6 +318,52 @@ model Asset {
 
   @@unique([userId, symbol])
   @@map("assets")
+}
+
+/// Nature d'un changement du portefeuille.
+enum OperationKind {
+  BUY
+  SELL
+  /// Position définie telle quelle (import initial, correction).
+  SET
+  REMOVE
+}
+
+/// D'où vient un changement du portefeuille.
+enum OperationSource {
+  /// Déclaré par l'utilisateur.
+  DECLARED
+  /// Conséquence d'un ordre exécuté.
+  ORDER
+}
+
+/// Journal des changements du portefeuille : achats et ventes déclarés, corrections, retraits, et jambes des ordres
+/// exécutés. Jamais modifié. Le portefeuille (Asset) reste la source de vérité des quantités ; ce journal sert à relire
+/// ce qui s'est passé et à cumuler les gains réalisés.
+model PortfolioOperation {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  symbol String
+  kind   OperationKind
+  source OperationSource @default(DECLARED)
+  /// Quantité échangée (achat, vente), nouvelle quantité (SET) ou quantité retirée (REMOVE).
+  quantity Decimal @db.Decimal(38, 18)
+  /// Prix unitaire (achat, vente) ou prix d'achat moyen (SET, REMOVE), en USD.
+  price Decimal @db.Decimal(38, 8)
+  /// Résultat réalisé d'une vente, en USD (exact, 18 décimales).
+  realizedPnl Decimal? @db.Decimal(38, 18)
+  /// Ordre à l'origine du changement (source ORDER).
+  orderId String?
+  /// Faux pour la jambe en monnaie de règlement (USDT) d'un ordre : l'ordre figure déjà dans le journal des ordres.
+  showInHistory Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, symbol, createdAt(sort: Desc)])
+  @@map("portfolio_operations")
 }
 
 /// Journal complet des ordres. Jamais supprimé.

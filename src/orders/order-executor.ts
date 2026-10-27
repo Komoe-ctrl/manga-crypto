@@ -2,7 +2,11 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service.js';
 import { formatNumber } from '../common/format.js';
 import { ExchangesService } from '../exchanges/exchanges.service.js';
-import { Prisma, type TradeLog } from '../generated/prisma/client.js';
+import {
+  OperationSource,
+  Prisma,
+  type TradeLog,
+} from '../generated/prisma/client.js';
 import {
   OrderOrigin,
   OrderSide,
@@ -386,6 +390,11 @@ export class OrderExecutor {
             price: leg.price.toFixed(),
           },
           {},
+          {
+            source: OperationSource.ORDER,
+            orderId: order.id,
+            cashLeg: leg.symbol === QUOTE,
+          },
         );
       } catch (error) {
         // Le portefeuille est déclaratif : un échec de mise à jour ne doit pas défaire un ordre déjà exécuté.

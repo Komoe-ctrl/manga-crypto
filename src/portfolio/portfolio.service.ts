@@ -1,15 +1,21 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service.js';
 import type { RequestContext } from '../auth/auth.service.js';
-import { Prisma } from '../generated/prisma/client.js';
+import {
+  OperationKind,
+  OperationSource,
+  Prisma,
+} from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type {
   HoldingDto,
+  OperationListDto,
   RecordTransactionDto,
   SetAssetDto,
   TransactionResultDto,
@@ -22,6 +28,21 @@ import {
 } from './portfolio-math.js';
 
 const CONFLICT = 'La position a été modifiée en parallèle, réessayez';
+
+/** D'où vient un changement du portefeuille : une déclaration de l'utilisateur, ou la conséquence d'un ordre exécuté. */
+export interface OperationOrigin {
+  source: OperationSource;
+  orderId?: string;
+  /** Jambe en monnaie de règlement (USDT) d'un ordre : gardée dans le journal mais masquée de l'historique affiché. */
+  cashLeg?: boolean;
+}
+const DECLARED: OperationOrigin = { source: OperationSource.DECLARED };
+
+export interface ListOperationsOptions {
+  symbol?: string;
+  limit: number;
+  before?: Date;
+}
 
 type AssetRow = {
   id: string;
@@ -37,6 +58,8 @@ type AssetRow = {
  */
 @Injectable()
 export class PortfolioService {
+  private readonly logger = new Logger(PortfolioService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
@@ -46,6 +69,7 @@ export class PortfolioService {
     userId: string,
     dto: RecordTransactionDto,
     ctx: RequestContext,
+    origin: OperationOrigin = DECLARED,
   ): Promise<TransactionResultDto> {
     const quantity = new Prisma.Decimal(dto.quantity);
     const price = new Prisma.Decimal(dto.price);
@@ -86,6 +110,14 @@ export class PortfolioService {
       },
       ...ctx,
     });
+    await this.journal(userId, {
+      symbol: dto.symbol,
+      kind: dto.side === 'BUY' ? OperationKind.BUY : OperationKind.SELL,
+      quantity,
+      price,
+      realizedPnl,
+      origin,
+    });
     return {
       holding: position && toHolding(dto.symbol, position),
       realizedPnl: realizedPnl?.toFixed() ?? null,
@@ -124,6 +156,13 @@ export class PortfolioService {
       },
       ...ctx,
     });
+    await this.journal(userId, {
+      symbol,
+      kind: OperationKind.SET,
+      quantity: position.quantity,
+      price: position.avgBuyPrice,
+      origin: DECLARED,
+    });
     return toHolding(symbol, position);
   }
 
@@ -146,6 +185,93 @@ export class PortfolioService {
       },
       ...ctx,
     });
+    await this.journal(userId, {
+      symbol,
+      kind: OperationKind.REMOVE,
+      quantity: current.quantity,
+      price: current.avgBuyPrice,
+      origin: DECLARED,
+    });
+  }
+
+  /**
+   * Historique des opérations (les plus récentes d'abord) et gain réalisé cumulé. Le cumul porte sur **tout** le journal
+   * (ou sur l'actif demandé), pas seulement sur la page lue : il ne bouge pas quand on pagine. Les jambes en monnaie de
+   * règlement des ordres sont masquées de la liste (l'ordre est déjà dans le journal des ordres) mais le cumul les voit.
+   */
+  async listOperations(
+    userId: string,
+    options: ListOperationsOptions,
+  ): Promise<OperationListDto> {
+    const scope = { userId, ...(options.symbol && { symbol: options.symbol }) };
+    const [rows, total] = await Promise.all([
+      this.prisma.portfolioOperation.findMany({
+        where: {
+          ...scope,
+          showInHistory: true,
+          ...(options.before && { createdAt: { lt: options.before } }),
+        },
+        orderBy: { createdAt: 'desc' },
+        take: options.limit,
+      }),
+      this.prisma.portfolioOperation.aggregate({
+        where: scope,
+        _sum: { realizedPnl: true },
+      }),
+    ]);
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        symbol: row.symbol,
+        kind: row.kind,
+        source: row.source,
+        quantity: new Prisma.Decimal(row.quantity).toFixed(),
+        price: new Prisma.Decimal(row.price).toFixed(),
+        realizedPnl: row.realizedPnl
+          ? new Prisma.Decimal(row.realizedPnl).toFixed()
+          : null,
+        orderId: row.orderId,
+        createdAt: row.createdAt,
+      })),
+      realizedTotal: new Prisma.Decimal(total._sum.realizedPnl ?? 0).toFixed(),
+    };
+  }
+
+  /**
+   * Inscrit un changement au journal. Le portefeuille est la source de vérité : si le journal échoue, l'opération de
+   * l'utilisateur, déjà faite, **n'est pas défaite ni refusée** (le changement reste dans le journal d'audit, avec
+   * tous ses montants) ; l'erreur est seulement consignée.
+   */
+  private async journal(
+    userId: string,
+    entry: {
+      symbol: string;
+      kind: OperationKind;
+      quantity: Prisma.Decimal;
+      price: Prisma.Decimal;
+      realizedPnl?: Prisma.Decimal | null;
+      origin: OperationOrigin;
+    },
+  ): Promise<void> {
+    try {
+      await this.prisma.portfolioOperation.create({
+        data: {
+          userId,
+          symbol: entry.symbol,
+          kind: entry.kind,
+          source: entry.origin.source,
+          quantity: entry.quantity,
+          price: entry.price,
+          realizedPnl: entry.realizedPnl ?? null,
+          orderId: entry.origin.orderId ?? null,
+          showInHistory: !entry.origin.cashLeg,
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Journal du portefeuille en échec (${entry.kind} ${entry.symbol}) : ${error instanceof Error ? error.name : 'erreur inconnue'}`,
+      );
+    }
   }
 
   list(userId: string): Promise<AssetRow[]> {

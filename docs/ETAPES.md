@@ -755,3 +755,55 @@ Voir le tableau de l'étape 15. En plus :
 `npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : voir la PR. Vérification du Push réel : D121.
 
 **Pas encore fait** : essai sur un téléphone, Chrome (FCM), Firefox et Safari ; écran des clés d'échange dans le front.
+
+
+## Étape 26 : l'historique des opérations
+
+**Livré** : une table `portfolio_operations` et `GET /api/portfolio/operations`. Chaque achat, vente, correction ou retrait déclaré, et chaque ordre exécuté, y est consigné ; le gain réalisé est cumulé. Décisions D123 à D128.
+
+### Appliquer la migration
+
+```powershell
+npx prisma migrate deploy      # PAS « prisma migrate dev » : il propose de réinitialiser la base (voir D128)
+npm run prisma:generate
+```
+
+### Réponse
+
+```json
+{
+  "items": [
+    { "id": "…", "symbol": "SOL", "kind": "SELL", "source": "DECLARED",
+      "quantity": "1", "price": "100.2", "realizedPnl": "-49.8", "orderId": null,
+      "createdAt": "2026-10-27T10:00:00.000Z" }
+  ],
+  "realizedTotal": "-99.7"
+}
+```
+
+| Paramètre | Rôle |
+|---|---|
+| `symbol` | Un seul actif (casse libre) ; le `realizedTotal` suit le filtre |
+| `limit` | 1 à 100, défaut 30 |
+| `before` | Date ISO : opérations antérieures (pagination avec le `createdAt` du dernier élément) |
+
+| Champ | Sens |
+|---|---|
+| `kind` | `BUY`, `SELL` : achat, vente ; `SET` : position définie telle quelle (import, correction) ; `REMOVE` : retrait |
+| `source` | `DECLARED` : déclaré ; `ORDER` : conséquence d'un ordre exécuté (`orderId` renseigné) |
+| `quantity`, `price` | Échangés (BUY, SELL), ou nouvelle position (SET), ou position retirée (REMOVE) ; prix en USD |
+| `realizedPnl` | Résultat réalisé d'une vente, `null` sinon |
+| `realizedTotal` | Cumul de tout le journal, indépendant de la page lue |
+
+### Diagnostiquer
+
+- **Une opération manque à l'historique** : regarder les journaux du serveur, « Journal du portefeuille en échec » (D126). La position est correcte et le journal d'audit a la trace complète.
+- **L'historique est vide alors que le portefeuille ne l'est pas** : normal pour les positions déclarées avant cette étape.
+- **`prisma migrate dev` propose de réinitialiser** : refuser (D128), utiliser `migrate deploy`.
+- **Pas de ligne « Vente d'USDT » pour un ordre** : volontaire (D124).
+
+### Vérifications
+
+`npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : voir la PR. Contre un vrai PostgreSQL et un vrai ordre de simulation : D128.
+
+**Pas encore fait** : l'écran de l'historique et de la fiche d'un actif dans `crypto-web` (étape suivante du front) ; la reconstitution du passé avant cette étape (impossible).

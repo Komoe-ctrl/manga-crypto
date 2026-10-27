@@ -139,6 +139,44 @@ describe('Orders (e2e)', () => {
     });
   });
 
+  it('un ordre exécuté figure à l’historique des opérations : sa jambe en USDT est masquée, son gain compte', async () => {
+    const auth = await login();
+    await fund(auth);
+    await http()
+      .put('/api/portfolio/assets/BTC')
+      .set('Authorization', auth)
+      .send({ quantity: '3', avgBuyPrice: '80' })
+      .expect(200);
+    const sale = await order(auth, {
+      symbol: 'BTC',
+      side: 'SELL',
+      quantity: '1',
+    }).expect(201);
+
+    const res = await http()
+      .get('/api/portfolio/operations')
+      .set('Authorization', auth)
+      .expect(200);
+
+    // Les plus récentes d'abord : la vente par ordre, puis les deux déclarations. La jambe USDT de l'ordre est masquée.
+    expect(
+      res.body.items.map(
+        (i: { symbol: string; kind: string; source: string }) => [
+          i.symbol,
+          i.kind,
+          i.source,
+        ],
+      ),
+    ).toEqual([
+      ['BTC', 'SELL', 'ORDER'],
+      ['BTC', 'SET', 'DECLARED'],
+      ['USDT', 'SET', 'DECLARED'],
+    ]);
+    expect(res.body.items[0].orderId).toBe(sale.body.id);
+    expect(res.body.items[0].realizedPnl).toBe('20'); // 1 × (100 − 80)
+    expect(res.body.realizedTotal).toBe('20');
+  });
+
   describe('ordre refusé : 422 avec le motif, l’ordre est conservé', () => {
     it('exposition maximale dépassée', async () => {
       const auth = await login();

@@ -1,6 +1,18 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
-import { IsEnum, Matches } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsEnum,
+  IsInt,
+  IsISO8601,
+  IsOptional,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
+import {
+  OperationKind,
+  OperationSource,
+} from '../../generated/prisma/client.js';
 
 /** Quantité ou prix : chaîne décimale (jamais un nombre JSON, qui perdrait de la précision), strictement positive. */
 const POSITIVE_DECIMAL = /^(?!0+(\.0+)?$)\d{1,20}(\.\d{1,18})?$/;
@@ -160,4 +172,82 @@ export class TrendsDto {
       'Faux si une courbe est indisponible pour au moins un actif (réponse partielle)',
   })
   complete: boolean;
+}
+
+export class OperationDto {
+  @ApiProperty({ format: 'uuid' }) id: string;
+  @ApiProperty({ example: 'BTC' }) symbol: string;
+  @ApiProperty({
+    enum: OperationKind,
+    enumName: 'OperationKind',
+    description:
+      'BUY, SELL : achat ou vente ; SET : position définie telle quelle (import, correction) ; REMOVE : position retirée',
+  })
+  kind: OperationKind;
+  @ApiProperty({
+    enum: OperationSource,
+    enumName: 'OperationSource',
+    description:
+      'DECLARED : déclaré par l’utilisateur ; ORDER : conséquence d’un ordre exécuté',
+  })
+  source: OperationSource;
+  @ApiProperty({
+    example: '0.05',
+    description:
+      'Quantité échangée (BUY, SELL), nouvelle quantité (SET) ou quantité retirée (REMOVE)',
+  })
+  quantity: string;
+  @ApiProperty({
+    example: '60000',
+    description:
+      'Prix unitaire (BUY, SELL) ou prix d’achat moyen (SET, REMOVE), en USD',
+  })
+  price: string;
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    example: '150',
+    description: 'Résultat réalisé d’une vente, en USD ; null sinon',
+  })
+  realizedPnl: string | null;
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    description: 'Ordre à l’origine du changement (source ORDER)',
+  })
+  orderId: string | null;
+  @ApiProperty() createdAt: Date;
+}
+
+export class OperationListDto {
+  @ApiProperty({ type: [OperationDto] }) items: OperationDto[];
+  @ApiProperty({
+    example: '150',
+    description:
+      'Résultat réalisé cumulé en USD, sur tout le journal (ou sur l’actif demandé) : il ne dépend pas de la page lue',
+  })
+  realizedTotal: string;
+}
+
+export class ListOperationsQuery {
+  @ApiPropertyOptional({ example: 'BTC', description: 'Un seul actif' })
+  @IsOptional()
+  @Transform(upper)
+  @Matches(SYMBOL, { message: 'symbol invalide' })
+  symbol?: string;
+
+  @ApiPropertyOptional({ default: 30, minimum: 1, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @ApiPropertyOptional({
+    description: 'Pagination : opérations antérieures à cette date (ISO 8601)',
+  })
+  @IsOptional()
+  @IsISO8601()
+  before?: string;
 }

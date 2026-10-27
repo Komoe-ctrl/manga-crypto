@@ -7,6 +7,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
   Req,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
@@ -15,6 +16,8 @@ import type { RequestContext } from '../auth/auth.service.js';
 import { CurrentUser, type AuthUser } from '../auth/decorators.js';
 import {
   HoldingDto,
+  ListOperationsQuery,
+  OperationListDto,
   PortfolioDto,
   RecordTransactionDto,
   SetAssetDto,
@@ -51,6 +54,23 @@ export class PortfolioController {
   @ApiOkResponse({ type: TrendsDto })
   getTrends(@CurrentUser() user: AuthUser) {
     return this.trends.trends(user.id);
+  }
+
+  /**
+   * Historique des achats, ventes, corrections et retraits (les plus récents d'abord), et gain réalisé cumulé. Les
+   * ordres exécutés y figurent aussi ; leur jambe en USDT est masquée.
+   */
+  @Get('operations')
+  @ApiOkResponse({ type: OperationListDto })
+  operations(
+    @CurrentUser() user: AuthUser,
+    @Query() query: ListOperationsQuery,
+  ) {
+    return this.portfolio.listOperations(user.id, {
+      symbol: query.symbol,
+      limit: query.limit ?? 30,
+      before: query.before ? new Date(query.before) : undefined,
+    });
   }
 
   /** Achat ou vente déclaré : met à jour la quantité et le prix moyen. */
