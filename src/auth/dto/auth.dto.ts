@@ -9,7 +9,7 @@ import {
   MinLength,
 } from 'class-validator';
 
-const TIMEZONES = [...Intl.supportedValuesOf('timeZone'), 'UTC'];
+export const TIMEZONES = [...Intl.supportedValuesOf('timeZone'), 'UTC'];
 
 const normalizeEmail = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim().toLowerCase() : value;

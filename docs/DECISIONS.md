@@ -547,6 +547,23 @@ Les plus récentes d'abord ; filtres `symbol` (casse libre), `limit` (1 à 100, 
 - **Piège : la doublure de base des tests** ne gère ni `NOT` ni `OR` ; d'où la colonne `showInHistory` (D124).
 *Limite :* l'historique **commence à la mise en service de cette étape** : les positions déjà déclarées n'ont pas de passé (il n'existe aucune source pour le reconstituer). Les gains réalisés avant cette date ne sont pas dans le cumul.
 
+## Étape 28 : les comptes du client
+
+### D129. Pas d'inscription publique : le compte du client est créé en ligne de commande
+Pour un produit à clients connus, une page d'inscription ouverte à tous est une surface d'attaque inutile (et `POST /api/auth/register` est déjà limité à 5 par minute mais reste public). En production : `AUTH_REGISTRATION_ENABLED=false` (le point d'accès répond alors 403) et l'administrateur crée le compte avec `npm run user:create -- client@example.com`. Mêmes règles que l'inscription : adresse normalisée en minuscules, mot de passe de **12 à 128 caractères**, **argon2id**, réglages de notification et de risque par défaut, mode simulation (PAPER). Le compte créé ici se connecte exactement comme les autres (vérifié, y compris avec l'adresse saisie en majuscules).
+
+### D130. Le mot de passe ne passe jamais par un argument de commande
+Un argument reste dans l'historique du shell et la liste des processus. Le script le demande **à l'invite, masqué, deux fois** ; sans terminal (automatisation), `VEILLE_PASSWORD` le fournit (à éviter dans un usage manuel : il reste dans l'environnement). Le mot de passe n'est jamais affiché ni consigné ; le journal d'audit n'en contient aucune trace (testé : ni le mot de passe, ni le hash).
+
+### D131. Réinitialiser un mot de passe ferme toutes les sessions
+`npm run user:password -- client@example.com` remplace le mot de passe **et révoque tous les refresh tokens actifs** du compte : un appareil resté connecté avec l'ancien mot de passe, ou un jeton volé, ne survit pas. Seules les sessions de ce compte sont touchées (testé : celles des autres comptes et celles déjà fermées ne bougent pas ; la date de fermeture d'origine est conservée). Un jeton d'accès déjà émis reste valable jusqu'à son expiration (15 minutes). Journal d'audit : `auth.account_created_by_admin` et `auth.password_reset_by_admin` (avec le nombre de sessions fermées).
+
+### D132. Un script mince sur une logique testée
+La logique est dans `src/cli/user-admin.ts` (testée avec la doublure de base : 23 tests, dont doublon, adresse ou mot de passe invalides, fuseau inconnu, compte supprimé, sessions des autres comptes) ; `scripts/user.mjs` ne fait que la saisie et l'affichage. Il se sert de l'API **construite** (`dist`) : lancer `npm run build` d'abord.
+*Vérifié sur un vrai PostgreSQL :* création, doublon, adresse invalide, mot de passe trop court, fuseau inconnu ; puis, API démarrée avec l'inscription fermée : inscription publique 403, connexion du compte créé (200), mauvais mot de passe (401), réinitialisation (2 sessions fermées), **l'ancienne session ne peut plus se renouveler (401)**, ancien mot de passe 401, nouveau 200.
+*Piège rencontré pendant la vérification :* les variables d'environnement ne se transmettent pas d'une commande à l'autre ; une vérification lancée sans `DATABASE_URL` a visé la base de développement (rien n'y a été écrit, quelques échecs de connexion y ont été consignés). Le script lit `.env` s'il n'y a pas de variable : **toujours vérifier sur quelle base on agit** (le script n'affiche pas son nom ; à ajouter si l'usage se répand).
+*Limites :* la saisie masquée n'a été éprouvée que par `VEILLE_PASSWORD` (pas de terminal interactif dans cet environnement) ; pas de commande pour supprimer un compte ni pour changer son e-mail.
+
 ---
 
 ## À prévoir (hors étapes livrées)

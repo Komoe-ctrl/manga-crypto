@@ -807,3 +807,43 @@ npm run prisma:generate
 `npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : voir la PR. Contre un vrai PostgreSQL et un vrai ordre de simulation : D128.
 
 **Pas encore fait** : l'écran de l'historique et de la fiche d'un actif dans `crypto-web` (étape suivante du front) ; la reconstitution du passé avant cette étape (impossible).
+
+
+## Étape 28 : les comptes du client
+
+**Livré** : deux commandes pour créer le compte d'un client et réinitialiser son mot de passe, sans inscription publique. Décisions D129 à D132.
+
+### Mettre un client en service
+
+```powershell
+# 1. En production, fermer l'inscription publique (variable d'environnement de l'API) :
+#    AUTH_REGISTRATION_ENABLED=false
+# 2. Construire l'API, puis créer le compte (le mot de passe est demandé, masqué, deux fois) :
+npm run build
+npm run user:create -- client@example.com --name "Prénom Nom" --timezone Europe/Paris
+# 3. Mot de passe oublié : le remplacer (toutes les sessions du client sont fermées)
+npm run user:password -- client@example.com
+```
+
+| Commande | Rôle |
+|---|---|
+| `user:create -- <email> [--name "…"] [--timezone …]` | Crée le compte (mode simulation, réglages par défaut). Refuse un compte existant. |
+| `user:password -- <email>` | Remplace le mot de passe et ferme toutes les sessions du compte. |
+
+Le fuseau par défaut est celui de la base ; le fuseau règle le Mode Nuit et l'heure du rapport du matin : le donner pour un client hors de France métropolitaine.
+
+### Diagnostiquer
+
+| Message | Cause |
+|---|---|
+| « Un compte existe déjà avec l'adresse … » | Le client a déjà un compte : utiliser `user:password` s'il a oublié son mot de passe |
+| « Aucun compte avec l'adresse … » | Faute de frappe, ou **mauvaise base** (vérifier `DATABASE_URL` dans `.env`) |
+| « Le mot de passe doit faire au moins 12 caractères » | Règle de l'inscription, identique ici |
+| « pas de terminal : fournissez le mot de passe par la variable VEILLE_PASSWORD » | Lancé sans terminal interactif |
+| Le client est déconnecté après une réinitialisation | Normal : toutes ses sessions sont fermées (D131) ; son jeton d'accès en cours expire en 15 minutes |
+
+### Vérifications
+
+`npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : voir la PR. Vérification sur un vrai PostgreSQL : D132.
+
+**Pas encore fait** : suppression d'un compte, changement d'adresse e-mail, mot de passe oublié en libre-service (hors SPEC MVP).
