@@ -726,3 +726,32 @@ Les actifs de la réponse sont ceux **détenus**, hors stablecoins. Aucune varia
 `npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : voir la PR. Vérification contre le vrai Binance : D119.
 
 **Pas encore fait** : l'affichage dans `crypto-web` (étape 22).
+
+
+## Étape 24 : activer le Push
+
+**Livré** : le Push fonctionne de bout en bout, vérifié avec un vrai navigateur (D121). Une correction du schéma OpenAPI (D120) et un commentaire inexact corrigé.
+
+### Activer le Push (une fois)
+
+1. Générer des clés : `npm run vapid:generate`, **sans copier la clé privée ailleurs que dans `.env`**.
+2. Renseigner `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` et `VAPID_SUBJECT` (voir le tableau des variables, étape 15), puis redémarrer l'API.
+3. Dans le front, Réglages > Notifications Push > **Activer sur cet appareil**, accepter la permission.
+4. Vérifier : **Envoyer un message de test** (verdict « Push envoyé »), ou `npm run test:push` dans `crypto-web` qui le fait avec un vrai Edge et nettoie ensuite.
+
+### Diagnostiquer
+
+Voir le tableau de l'étape 15. En plus :
+
+| Symptôme | Cause probable |
+|---|---|
+| « Le navigateur a refusé l'abonnement… navigation privée » | La navigation privée n'offre pas le Push (Chrome, Edge) ; utiliser une fenêtre normale |
+| « Le service de notifications du navigateur est injoignable » | Pare-feu ou réseau qui bloque le service de notifications du navigateur |
+| Tous les appareils passent à « à renouveler » | Les clés VAPID ont changé : se réabonner |
+| `push_http_403` | La clé publique et la clé privée ne sont pas de la même paire |
+
+### Vérifications
+
+`npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : voir la PR. Vérification du Push réel : D121.
+
+**Pas encore fait** : essai sur un téléphone, Chrome (FCM), Firefox et Safari ; écran des clés d'échange dans le front.

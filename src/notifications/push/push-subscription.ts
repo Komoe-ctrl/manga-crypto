@@ -18,14 +18,14 @@ export const MAX_PUSH_SUBSCRIPTIONS = 5;
  * services Push publics connus, en https.
  */
 const ALLOWED_HOSTS = new Set([
-  'fcm.googleapis.com', // Chrome, Edge, Brave, Opera (Android et ordinateur)
+  'fcm.googleapis.com', // Chrome, Brave, Opera (Android et ordinateur)
   'android.googleapis.com', // anciens abonnements Chrome
   'updates.push.services.mozilla.com', // Firefox
   'web.push.apple.com', // Safari
 ]);
 const ALLOWED_SUFFIXES = [
   '.push.services.mozilla.com', // Firefox (autres régions)
-  '.notify.windows.com', // Edge historique, Windows
+  '.notify.windows.com', // Edge sur Windows (constaté : Edge 156 s'abonne via wns2-*.notify.windows.com, pas via FCM)
   '.push.apple.com', // Safari
 ];
 

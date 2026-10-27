@@ -512,6 +512,18 @@ Même principe que la valorisation. Un actif sans données (source en panne, act
 Les doubles de test existants (sept fichiers) ont reçu la nouvelle méthode du fournisseur de prix.
 *Limites :* cache en mémoire, perdu au redémarrage et non partagé entre instances (voir « Cache Redis » ci-dessous) ; la variation 24 h compare des clôtures horaires (au plus une heure d'écart avec « il y a 24 h pile ») ; une seule source (Binance).
 
+## Étape 24 : le Push vérifié pour de vrai
+
+### D120. Schéma OpenAPI de `market.state`
+Le champ pouvait valoir `null` (BTC injoignable, D118) mais le schéma publié ne le disait pas : en OpenAPI 3.0, `nullable: true` sur une **énumération** est ignoré par les générateurs si `null` n'est pas dans la liste des valeurs. Le front généré donnait donc un type non nul. Corrigé (`enum: ['UP', 'DOWN', 'CALM', null]`) ; le schéma publié et les types générés incluent maintenant `null`. Comportement de l'API inchangé.
+
+### D121. Push de bout en bout avec un vrai service de notifications
+Jusqu'ici, le chemin « clés VAPID → abonnement du navigateur → envoi → notification affichée » n'avait été exercé qu'avec des faux (D112 : vrai chiffrement, faux service). Vérifié avec le **vrai Edge** (profil persistant) piloté par Playwright, en production locale : abonnement depuis l'écran Réglages, enregistrement par l'API, message de test, verdict « Push envoyé », puis notification **réellement affichée par le service worker**, puis désabonnement. Le service utilisé par Edge 156 est celui de Microsoft (`wns2-par02p.notify.windows.com`), accepté par la liste blanche (`.notify.windows.com`). **Le commentaire de la liste disait qu'Edge passait par FCM : faux, corrigé.** L'outil de vérification est `npm run test:push` dans `crypto-web`.
+
+### D122. Mise en service
+Les trois variables `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` sont dans le `.env` local (ignoré par git). Les clés ont été générées par `web-push` et **écrites sans jamais être affichées** : la clé privée est un secret, elle ne figure ni dans git ni dans une conversation. Le sujet (`mailto:…`) est transmis aux services de notifications : ne pas y mettre une adresse personnelle sans y avoir pensé. **Changer de clés invalide tous les abonnements existants** ; le front les détecte (« à renouveler »).
+*Non couvert :* un vrai téléphone (Android, iOS/Safari), Chrome via FCM et Firefox : seul Edge sur Windows a été exercé.
+
 ---
 
 ## À prévoir (hors étapes livrées)
@@ -536,7 +548,7 @@ Les doubles de test existants (sept fichiers) ont reçu la nouvelle méthode du 
 | Alertes : valeur de la dernière évaluation | L'API n'expose pas le prix observé ni l'écart au seuil (« ETH à ~2,5 % de votre seuil », maquette) ; à ajouter si le front en a besoin. |
 | Cache Redis des prix et de l'historique | Voir D36 et D119 : les prix passés et les séries horaires des tendances sont aujourd'hui en mémoire (perdus au redémarrage, non partagés entre instances). |
 | Confirmation de l'adresse email de notification | Voir D111 : à faire avant d'ouvrir l'inscription publique ; sans elle, une adresse non vérifiée peut recevoir des messages. |
-| Service worker et écran d'abonnement du front | Le Push n'atteindra personne tant que crypto-web n'a pas de service worker ni de bouton d'abonnement (SPEC section 9). |
+| Push sur d'autres navigateurs et sur téléphone | Seul Edge sur Windows a été exercé (D121) ; Chrome (FCM), Firefox, Safari et un vrai téléphone restent à essayer. |
 | Vérifier le Push avec un vrai navigateur | Voir D112 : le chiffrement et la signature sont vérifiés, mais aucun vrai service Push (Chrome, Firefox, Safari) n'a été essayé. |
 | Plusieurs instances de l'API et temps réel | Voir D105 : le bus WebSocket est en mémoire ; Redis pub/sub si l'API tourne en plusieurs instances. |
 | Rejeu des événements WebSocket manqués | Voir D105 : le front relit l'état par l'API à chaque reconnexion ; un identifiant d'événement permettrait de rejouer. |

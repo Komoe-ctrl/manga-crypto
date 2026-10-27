@@ -141,7 +141,8 @@ export class AssetTrendDto {
 
 export class MarketDto {
   @ApiProperty({
-    enum: ['UP', 'DOWN', 'CALM'],
+    // OpenAPI 3.0 : une énumération nullable doit contenir `null` dans ses valeurs, sinon les générateurs ignorent `nullable`.
+    enum: ['UP', 'DOWN', 'CALM', null],
     nullable: true,
     description:
       'Indicateur descriptif d’après le BTC sur 24 h (±2 %) ; ce n’est pas un signal de trading. Null si indisponible',
