@@ -524,6 +524,29 @@ Jusqu'ici, le chemin « clés VAPID → abonnement du navigateur → envoi → n
 Les trois variables `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` sont dans le `.env` local (ignoré par git). Les clés ont été générées par `web-push` et **écrites sans jamais être affichées** : la clé privée est un secret, elle ne figure ni dans git ni dans une conversation. Le sujet (`mailto:…`) est transmis aux services de notifications : ne pas y mettre une adresse personnelle sans y avoir pensé. **Changer de clés invalide tous les abonnements existants** ; le front les détecte (« à renouveler »).
 *Non couvert :* un vrai téléphone (Android, iOS/Safari), Chrome via FCM et Firefox : seul Edge sur Windows a été exercé.
 
+## Étape 26 : l'historique des opérations
+
+### D123. Pourquoi une table dédiée
+Le portefeuille est déclaratif (D32) et ne gardait **que l'état** : quantité et prix moyen. Un achat, une vente, une correction ne laissaient aucune trace consultable, et le gain réalisé d'une vente n'était « pas persisté » (D33) : seulement renvoyé et écrit dans le journal d'audit. Un client voudra relire ce qu'il a fait et connaître ses gains réalisés. L'audit n'est pas fait pour cela (journal de sécurité, difficile à interroger, destiné à être purgé), d'où la table `portfolio_operations` (`PortfolioOperation`) : nature (`BUY`, `SELL`, `SET`, `REMOVE`), actif, quantité, prix, **résultat réalisé exact** (18 décimales), origine (`DECLARED` ou `ORDER` avec l'identifiant de l'ordre). Le portefeuille (`Asset`) reste la source de vérité des quantités ; le journal est écrit après lui et n'est jamais modifié.
+
+### D124. Ordres exécutés : dans le journal, jambe en USDT masquée
+Une exécution d'ordre écrit dans le portefeuille par la **même** fonction que les déclarations (deux jambes : l'actif et l'USDT). Sans précaution, l'historique aurait montré deux lignes par ordre, dont une « Vente d'USDT » que l'utilisateur n'a jamais demandée. Les jambes passent donc par la même fonction avec leur origine (`ORDER`, `orderId`), et la **jambe en monnaie de règlement est marquée `showInHistory = false`** : conservée dans le journal (le cumul la voit), masquée de la liste (l'ordre figure déjà dans le journal des ordres). Une colonne plutôt qu'un filtre : requête simple, index simple, testable.
+
+### D125. Cumul du gain réalisé : sur tout le journal, pas sur la page
+`realizedTotal` est une somme décimale exacte faite par la base (`aggregate`), sur tout le journal de l'utilisateur ou sur l'actif demandé. Il **ne dépend pas de la page lue** : paginer ne le change pas. Vérifié sur la vraie base : −49,9 et −49,8 donnent **−99,7** (aucune erreur de flottant). Il inclut les ventes faites par ordres. Sans vente : `"0"`.
+
+### D126. Une panne du journal ne défait pas l'opération
+Si l'écriture du journal échoue, l'opération de l'utilisateur, déjà faite, **n'est ni refusée ni défaite** : la position est écrite, le journal d'audit garde tous les montants, l'erreur est consignée. Choix assumé : refuser une vente légitime parce qu'une table secondaire est indisponible serait pire. Contrepartie : l'historique peut alors avoir un trou (visible dans les journaux du serveur). Pas de transaction commune, car la doublure de base des tests n'en gère pas et le portefeuille écrit déjà par mise à jour conditionnelle (D35).
+
+### D127. Lecture : `GET /api/portfolio/operations`
+Les plus récentes d'abord ; filtres `symbol` (casse libre), `limit` (1 à 100, défaut 30) et `before` (date ISO) pour paginer ; réponse `{ items, realizedTotal }`. Toute requête invalide (limite, symbole, date) répond 400. Authentifié, isolé par utilisateur.
+
+### D128. Vérification, et deux pièges rencontrés
+- **Vrai PostgreSQL** : la migration s'applique sur une base neuve (toutes les migrations), un vrai ordre de simulation apparaît avec son identifiant et sa jambe en USDT masquée, le cumul est exact, la pagination et le filtre répondent comme attendu. *Non contrôlé directement :* le contenu brut de la table (ma commande de lecture a échoué sur un problème de guillemets) ; le stockage de la jambe masquée est couvert par les tests.
+- **Piège : `prisma migrate dev` veut réinitialiser la base de développement.** Il annonce « La migration 20261023123601_init_schema a été modifiée après avoir été appliquée » (somme de contrôle différente : la base a été initialisée avec une autre version du fichier ; **ce n'est pas un problème de fins de ligne**, je l'ai vérifié). Le fichier est sans caractère CR et sa somme ne correspond à aucune variante. **Ne répondez jamais oui à une réinitialisation.** Cause exacte inconnue ; la migration de cette étape a été générée par `prisma migrate diff` (comparaison des deux schémas, sans toucher à la base) et appliquée par `prisma migrate deploy`, qui n'applique que ce qui manque. Une base neuve (tests, déploiement) n'a pas ce problème.
+- **Piège : la doublure de base des tests** ne gère ni `NOT` ni `OR` ; d'où la colonne `showInHistory` (D124).
+*Limite :* l'historique **commence à la mise en service de cette étape** : les positions déjà déclarées n'ont pas de passé (il n'existe aucune source pour le reconstituer). Les gains réalisés avant cette date ne sont pas dans le cumul.
+
 ---
 
 ## À prévoir (hors étapes livrées)

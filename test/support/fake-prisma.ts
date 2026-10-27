@@ -361,6 +361,48 @@ export class FakePrisma {
     },
   };
 
+  portfolioOperations: Row[] = [];
+
+  portfolioOperation = {
+    create: async ({ data }: Row) => {
+      const row = {
+        id: randomUUID(),
+        source: 'DECLARED',
+        realizedPnl: null,
+        orderId: null,
+        showInHistory: true,
+        // Horloge strictement croissante : l'ordre du journal est celui des écritures.
+        createdAt: this.tick(),
+        ...data,
+      };
+      this.portfolioOperations.push(row);
+      return { ...row };
+    },
+    findMany: async ({ where, orderBy, take }: Row) => {
+      const rows = this.portfolioOperations
+        .filter((r) => matches(r, where))
+        .sort((a, b) =>
+          orderBy?.createdAt === 'asc'
+            ? a.createdAt - b.createdAt
+            : b.createdAt - a.createdAt,
+        )
+        .map((r) => ({ ...r }));
+      return take === undefined ? rows : rows.slice(0, take);
+    },
+    aggregate: async ({ where }: Row) => {
+      const sold = this.portfolioOperations
+        .filter((r) => matches(r, where) && r.realizedPnl !== null)
+        .map((r) => new Prisma.Decimal(r.realizedPnl));
+      return {
+        _sum: {
+          realizedPnl: sold.length
+            ? sold.reduce((a, b) => a.plus(b), new Prisma.Decimal(0))
+            : null,
+        },
+      };
+    },
+  };
+
   exchangeConfigs: Row[] = [];
   tradeLogs: Row[] = [];
 

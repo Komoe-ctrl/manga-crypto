@@ -231,6 +231,133 @@ describe('Portfolio (e2e)', () => {
     expect(res.body.market.state).toBe('CALM'); // le BTC, lui, est connu
   });
 
+  it('exige une authentification pour l’historique', async () => {
+    await http().get('/api/portfolio/operations').expect(401);
+  });
+
+  it('historique : achats, ventes, correction et retrait, les plus récents d’abord, avec le gain réalisé cumulé', async () => {
+    const auth = await login();
+    const send = (path: string, body: object) =>
+      http().post(path).set('Authorization', auth).send(body).expect(200);
+    await send('/api/portfolio/transactions', {
+      symbol: 'BTC',
+      side: 'BUY',
+      quantity: '2',
+      price: '100',
+    });
+    await send('/api/portfolio/transactions', {
+      symbol: 'BTC',
+      side: 'SELL',
+      quantity: '1',
+      price: '150',
+    });
+    await http()
+      .put('/api/portfolio/assets/ETH')
+      .set('Authorization', auth)
+      .send({ quantity: '4', avgBuyPrice: '10' })
+      .expect(200);
+    await http()
+      .delete('/api/portfolio/assets/ETH')
+      .set('Authorization', auth)
+      .expect(204);
+
+    const res = await http()
+      .get('/api/portfolio/operations')
+      .set('Authorization', auth)
+      .expect(200);
+
+    expect(
+      res.body.items.map((i: { symbol: string; kind: string }) => [
+        i.symbol,
+        i.kind,
+      ]),
+    ).toEqual([
+      ['ETH', 'REMOVE'],
+      ['ETH', 'SET'],
+      ['BTC', 'SELL'],
+      ['BTC', 'BUY'],
+    ]);
+    expect(res.body.items[2]).toMatchObject({
+      quantity: '1',
+      price: '150',
+      realizedPnl: '50',
+      source: 'DECLARED',
+      orderId: null,
+    });
+    expect(res.body.realizedTotal).toBe('50');
+    expect(typeof res.body.items[0].createdAt).toBe('string');
+  });
+
+  it('historique : filtre par actif (casse libre), pagine, et le cumul ne dépend pas de la page', async () => {
+    const auth = await login();
+    for (const q of ['1', '2', '3']) {
+      await http()
+        .post('/api/portfolio/transactions')
+        .set('Authorization', auth)
+        .send({ symbol: 'BTC', side: 'BUY', quantity: q, price: '100' })
+        .expect(200);
+    }
+    await http()
+      .post('/api/portfolio/transactions')
+      .set('Authorization', auth)
+      .send({ symbol: 'ETH', side: 'BUY', quantity: '1', price: '10' })
+      .expect(200);
+
+    const btc = await http()
+      .get('/api/portfolio/operations?symbol=btc')
+      .set('Authorization', auth)
+      .expect(200);
+    expect(btc.body.items).toHaveLength(3);
+
+    const first = await http()
+      .get('/api/portfolio/operations?limit=2')
+      .set('Authorization', auth)
+      .expect(200);
+    expect(first.body.items.map((i: { symbol: string }) => i.symbol)).toEqual([
+      'ETH',
+      'BTC',
+    ]);
+    const before = encodeURIComponent(first.body.items[1].createdAt);
+    const second = await http()
+      .get('/api/portfolio/operations?limit=2&before=' + before)
+      .set('Authorization', auth)
+      .expect(200);
+    expect(
+      second.body.items.map((i: { quantity: string }) => i.quantity),
+    ).toEqual(['2', '1']);
+  });
+
+  it.each([
+    ['limit=0'],
+    ['limit=101'],
+    ['limit=abc'],
+    ['symbol=btc%2Fusdt'],
+    ['symbol=a'],
+    ['before=pas-une-date'],
+  ])('historique : refuse la requête invalide ?%s', async (query) => {
+    const auth = await login();
+    await http()
+      .get('/api/portfolio/operations?' + query)
+      .set('Authorization', auth)
+      .expect(400);
+  });
+
+  it('historique : isole les utilisateurs', async () => {
+    const owner = await login('a@example.com');
+    const other = await login('b@example.com');
+    await http()
+      .post('/api/portfolio/transactions')
+      .set('Authorization', owner)
+      .send({ symbol: 'BTC', side: 'BUY', quantity: '1', price: '100' })
+      .expect(200);
+
+    const res = await http()
+      .get('/api/portfolio/operations')
+      .set('Authorization', other)
+      .expect(200);
+    expect(res.body).toEqual({ items: [], realizedTotal: '0' });
+  });
+
   it('isole les utilisateurs', async () => {
     const owner = await login('a@example.com');
     const other = await login('b@example.com');
