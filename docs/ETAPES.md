@@ -847,3 +847,31 @@ Le fuseau par défaut est celui de la base ; le fuseau règle le Mode Nuit et l'
 `npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run lint` : voir la PR. Vérification sur un vrai PostgreSQL : D132.
 
 **Pas encore fait** : suppression d'un compte, changement d'adresse e-mail, mot de passe oublié en libre-service (hors SPEC MVP).
+
+---
+
+## Étape 31 : mise en service
+
+### Ce qui est livré
+- `Dockerfile` et `.dockerignore` : image de production de l'API.
+- `GET /api/health` : sonde de santé (base et Redis).
+- `scripts/start-prod.mjs` : migrations puis démarrage.
+- Variables `TRUST_PROXY`, `SWAGGER_ENABLED`, `RUN_MIGRATIONS` ; contrôle de configuration au démarrage en production.
+- **`docs/DEPLOIEMENT.md`** : le mode d'emploi complet (variables, ordre de mise en service, création du compte du client, sauvegarde et restauration, mise à jour, diagnostic).
+
+### Organisation du code
+| Fichier | Rôle |
+|---|---|
+| `src/common/production.ts` | `trustProxySetting`, `swaggerEnabled`, `productionConfigProblems`, `assertProductionConfig` |
+| `src/health/health.controller.ts`, `health.module.ts` | La sonde ; Redis vérifié seulement si les tâches de fond sont actives |
+| `scripts/start-prod.mjs` | Migrations puis API, dans le même processus |
+| `src/main.ts` | Contrôle de configuration, proxy de confiance, arrêt propre, Swagger conditionnel |
+
+### Diagnostiquer
+Voir le tableau de `docs/DEPLOIEMENT.md`.
+
+### Vérifications
+`npm run typecheck`, `npm run lint`, `npm test`, `npm run test:e2e` : voir la PR. Vérifications réelles et limites dans D133 à D139.
+
+**Reste à faire** : choisir la plateforme et le domaine, déployer, essayer la restauration sur la vraie base, essayer l'installation et le Push sur le téléphone du client.
+
