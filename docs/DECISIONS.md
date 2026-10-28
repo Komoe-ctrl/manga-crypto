@@ -566,6 +566,30 @@ La logique est dans `src/cli/user-admin.ts` (testée avec la doublure de base : 
 
 ---
 
+## Étape 31 : mise en service
+
+### D133. Derrière un proxy : `TRUST_PROXY`, absent par défaut
+Les plateformes placent un proxy devant l'API : `req.ip` y est l'adresse du proxy pour tout le monde. Conséquences : la limite de 5 connexions par minute serait **partagée par tous les utilisateurs**, et le journal d'audit noterait la mauvaise adresse. `TRUST_PROXY=<nombre de proxys>` règle `trust proxy` d'Express. Il est **absent par défaut** : sans proxy, `X-Forwarded-For` est librement falsifiable, et lui faire confiance permettrait de contourner la limite en changeant l'en-tête. Seul un nombre est accepté : `true` ferait confiance à n'importe quel `X-Forwarded-For`. Vérifié pour de vrai : sans `TRUST_PROXY`, six tentatives avec six en-têtes différents donnent 429 à la sixième ; avec `TRUST_PROXY=1`, six clients différents ne sont pas limités et le même client l'est.
+
+### D134. Une configuration de production dangereuse arrête le démarrage
+`NODE_ENV=production` : l'API refuse de démarrer, avec **tous** les problèmes d'un coup (un seul déploiement raté), si `WEB_ORIGIN` n'est pas en https (le cookie est `secure`) ou finit par « / » (CORS compare telle quelle), si la base ou Redis ne sont pas renseignés, ou si **l'inscription publique est ouverte** (`AUTH_REGISTRATION_ENABLED` vaut `true` par défaut : n'importe qui aurait pu créer un compte). Le message ne contient aucune valeur secrète. Les secrets JWT et de chiffrement étaient déjà refusés trop courts ou absents.
+
+### D135. Sonde de santé `GET /api/health`
+Publique, hors limitation de débit, sans donnée ni détail : 200 si la base répond (et Redis, quand les tâches de fond l'utilisent), 503 sinon, avec l'état de chaque dépendance (`up`, `down`, `disabled`). Chaque contrôle a 2 s : une sonde ne doit pas rester suspendue. Redis n'est vérifié que si les tâches de fond sont actives : sans elles, aucune connexion Redis n'existe et la sonde n'en ouvre pas.
+
+### D136. Swagger fermé en production, arrêt propre
+`/docs` décrit toute l'API : fermé en production (`SWAGGER_ENABLED=true` le rouvre). `enableShutdownHooks` : à chaque déploiement, le signal SIGTERM ferme proprement les tâches de fond, le WebSocket, Redis et la base.
+
+### D137. Image Docker : migrations au démarrage, un seul processus
+`Dockerfile` en deux temps. Le démarrage (`scripts/start-prod.mjs`) applique `prisma migrate deploy` puis lance l'API **dans le même processus** (le SIGTERM lui arrive directement). Si une migration échoue, l'API ne démarre pas. `node_modules` reste complet dans l'image : Prisma est un outil de développement du dépôt, mais les migrations s'appliquent au démarrage (image plus lourde, un seul mécanisme). Le démarrage est en Node et non en script shell : sous Windows, git convertit les fins de ligne en CRLF, ce qui casserait un `.sh` dans l'image. Processus non privilégié (`USER node`) : l'essai de l'image a montré que Prisma a alors besoin d'écrire dans `node_modules/@prisma/engines` (« Can't write to … » : les migrations échouaient, l'API ne démarrait pas) ; les fichiers sont donc copiés avec `--chown=node:node`. `npm ci` fait plusieurs tentatives : un téléchargement coupé (ECONNRESET, vu pendant l'essai) ne doit pas faire échouer un déploiement.
+
+### D138. Un domaine à soi est obligatoire (et le proxy « même origine » écarté)
+Cookie de session en `SameSite=Strict` : le site et l'API doivent être sous le même domaine (`app.` et `api.`). Les adresses par défaut des plateformes sont sur des domaines publics distincts : la session ne se renouvellerait plus. Alternative étudiée : faire relayer `/api` par le site pour tout servir depuis une seule origine. **Écartée** : elle demande de changer la configuration du client généré, double chaque appel d'un saut réseau, ne couvre pas le WebSocket (qui reste direct), et ajoute une pièce à comprendre pour économiser environ 10 € par an.
+
+### D139. Vérification et limites
+Réel : **l'image Docker construite puis exécutée** sur une base jetable et un Redis isolé (démarrage, 9 migrations appliquées, `/api/health` 200 avec **base et Redis actifs**, processus non root, `/docs` en 404, création du compte par `node scripts/user.mjs create`, connexion avec ce compte, cookie `HttpOnly; Secure; SameSite=Strict; Path=/api/auth`, inscription publique refusée en 403, arrêt propre sur SIGTERM en 0,9 s) ; démarrage par `start-prod.mjs` sur une base jetable (migrations appliquées, `/api/health` 200, `/docs` en 404, `TRUST_PROXY` avec et sans, `SWAGGER_ENABLED`) ; **sauvegarde puis restauration** de la base de développement dans une base vide : 14 tables et 9 migrations identiques ligne à ligne ; démarrage refusé avec une configuration de production incomplète. Tests unitaires : `production.spec.ts`, `health.controller.spec.ts`.
+**Non vérifié** : aucun déploiement chez un vrai hébergeur (plateforme et domaine non choisis) ; le comportement derrière un vrai proxy https (le cookie `Secure` n'a été vu que dans l'en-tête, en http local) ; la taille de l'image (1,17 Go : `node_modules` complet) ; les performances.
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
