@@ -12,6 +12,7 @@ import { DigestEngineModule } from './digests/digest-engine.module.js';
 import { DigestsModule } from './digests/digests.module.js';
 import { ExchangesModule } from './exchanges/exchanges.module.js';
 import { HealthModule } from './health/health.module.js';
+import { MarketModule } from './market/market.module.js';
 import { AlertsEngineModule } from './notifications/engine/alerts-engine.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { OrdersModule } from './orders/orders.module.js';
@@ -35,6 +36,7 @@ import { RiskModule } from './risk/risk.module.js';
     ExchangesModule,
     RiskModule,
     PortfolioModule,
+    MarketModule,
     NotificationsModule,
     // Connexion BullMQ unique, avant les modules qui déclarent des files.
     QueueModule.register(),

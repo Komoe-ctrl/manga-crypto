@@ -54,6 +54,7 @@ export const CCXT_FACTORY = Symbol('CCXT_FACTORY');
 const EXCHANGE_IDS: Record<Exchange, string> = {
   [Exchange.BINANCE]: 'binance',
   [Exchange.KRAKEN]: 'kraken',
+  [Exchange.COINBASE]: 'coinbase',
 };
 const TIMEOUT_MS = 15_000;
 const MARKETS_TTL_MS = 60 * 60_000;

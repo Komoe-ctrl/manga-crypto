@@ -590,6 +590,33 @@ Cookie de session en `SameSite=Strict` : le site et l'API doivent être sous le 
 Réel : **l'image Docker construite puis exécutée** sur une base jetable et un Redis isolé (démarrage, 9 migrations appliquées, `/api/health` 200 avec **base et Redis actifs**, processus non root, `/docs` en 404, création du compte par `node scripts/user.mjs create`, connexion avec ce compte, cookie `HttpOnly; Secure; SameSite=Strict; Path=/api/auth`, inscription publique refusée en 403, arrêt propre sur SIGTERM en 0,9 s) ; démarrage par `start-prod.mjs` sur une base jetable (migrations appliquées, `/api/health` 200, `/docs` en 404, `TRUST_PROXY` avec et sans, `SWAGGER_ENABLED`) ; **sauvegarde puis restauration** de la base de développement dans une base vide : 14 tables et 9 migrations identiques ligne à ligne ; démarrage refusé avec une configuration de production incomplète. Tests unitaires : `production.spec.ts`, `health.controller.spec.ts`.
 **Non vérifié** : aucun déploiement chez un vrai hébergeur (plateforme et domaine non choisis) ; le comportement derrière un vrai proxy https (le cookie `Secure` n'a été vu que dans l'en-tête, en http local) ; la taille de l'image (1,17 Go : `node_modules` complet) ; les performances.
 
+## Étape 32 : Coinbase, CoinGecko et CoinMarketCap
+
+### D140. Trois liens, deux natures : une plateforme d'échange et deux sources de données
+Le client a demandé de « connecter » Coinbase, CoinGecko et CoinMarketCap. Coinbase est une **plateforme d'échange** (clé de l'utilisateur, passage d'ordres) : elle rejoint Binance et Kraken (enum `Exchange`, un vérificateur, un identifiant `ccxt`). CoinGecko et CoinMarketCap sont des **sources de données de marché** : aucune clé d'utilisateur, une clé du *service* dans l'environnement. Les mélanger aurait fait entrer des agrégateurs dans le module des clés d'échange et son contrôle « refuser tout droit de retrait ».
+
+### D141. Coinbase : `can_transfer` vaut droit de retrait
+Coinbase Advanced Trade n'a pas de droit « Withdrawal » distinct. `GET /api/v3/brokerage/key_permissions` renvoie `can_view`, `can_trade`, `can_transfer` ; `can_transfer` (envoyer des fonds hors du compte) est traité comme un retrait et fait **refuser la clé**, conformément à la règle non négociable. Un champ absent ou non booléen est une réponse inexploitable, jamais « pas de transfert ».
+Authentification : clés Coinbase Developer Platform, JWT ES256 signé avec `node:crypto` (aucune dépendance ajoutée), valable 2 minutes et lié à une seule requête (claim `uri`). `apiKey` = nom de la clé (`organizations/…/apiKeys/…`), `apiSecret` = clé privée PEM. Le DTO accepte donc un secret multiligne (jusqu'à 1 500 caractères) en plus des secrets sans espace, et un PEM écrit sur une ligne avec des `\n` littéraux est toléré. Une clé privée illisible est refusée (`InvalidCredentialsError`) sans appeler Coinbase. Pas de testnet équivalent : même traitement que Binance (non vérifiée, jamais utilisable en LIVE).
+
+### D142. Limite connue : les ordres sont passés sur des paires en USDT
+Le module d'ordres cote tout en `<SYMBOLE>/USDT` (`QUOTE`). Coinbase cote surtout en USD et USDC : beaucoup de paires USDT n'y existent pas. Dans ce cas la plateforme répond « paire inconnue » et l'ordre est refusé proprement (`invalid_symbol`), sans rien passer. La clé Coinbase se **connecte et se vérifie** dès maintenant ; le **trading LIVE sur Coinbase** demande de rendre la devise de cotation dépendante de la plateforme (étape à part). Le mode PAPER n'est pas concerné.
+
+### D143. Des prix à plusieurs sources : Binance, puis CoinGecko, puis CoinMarketCap
+`FallbackPriceProvider` essaie les sources dans l'ordre. Une panne ou une limite de débit (`PriceUnavailableError`) fait passer à la suivante ; pour les prix du moment, la source suivante n'est interrogée que pour les symboles que la précédente ne connaît pas. Toute autre erreur est une erreur de programmation et remonte. Si aucune source n'a répondu : `PriceUnavailableError`, que la valorisation sait déjà dégrader. Si une source a répondu « inconnu » et une autre est en panne : `null`.
+Contrepartie assumée : deux sources n'affichent pas exactement le même prix (écart de quelques dixièmes de %). Une courbe vient toujours d'une seule source (un seul appel). CoinGecko et CoinMarketCap partagent leur cache avec la route `/market/coins`.
+
+### D144. CoinGecko sans clé, CoinMarketCap seulement avec clé
+CoinGecko répond sans clé (API publique, limitée) ; `COINGECKO_API_KEY` (offre Demo) ou `COINGECKO_PLAN=pro` avec une clé Pro relèvent les quotas. CoinMarketCap exige une clé : sans `COINMARKETCAP_API_KEY`, la source n'est pas créée. L'historique (courbes, prix passé) n'est fourni que par CoinGecko ; chez CoinMarketCap il est réservé aux offres payantes, la source le déclare indisponible et la bascule continue. Les clés ne passent que dans un en-tête, jamais dans une URL ni un journal ; les statuts 401, 403 et 429 sont des indisponibilités, jamais « l'actif n'existe pas ».
+Homonymes : plusieurs actifs peuvent porter le même symbole. CoinGecko classe par capitalisation et on garde le premier ; chez CoinMarketCap, le meilleur rang. Cache de 60 s par symbole (absence comprise) pour tenir dans les quotas gratuits.
+
+### D145. `GET /api/market/coins?symbols=BTC,ETH`
+Prix, capitalisation, rang et variation sur 24 h, pour 1 à 25 symboles. Les sources se complètent (la suivante ne reçoit que les symboles manquants) ; la réponse indique `unknown` (inconnus de toutes) et `complete: false` quand une source en panne a pu priver la réponse d'un actif. Aucune source disponible : 503. Montants en texte décimal.
+
+### D146. Vérification et limites
+Réel : la forme des réponses de **CoinGecko** (`/coins/markets`, `/market_chart`, sans clé) a été contrôlée sur l'API publique ; Coinbase répond bien 401 sans jeton. Tests : `coinbase.verifier.spec.ts` (le JWT est vérifié avec la clé publique), `coingecko.source.spec.ts`, `coinmarketcap.source.spec.ts`, `fallback-price.provider.spec.ts`, `market.service.spec.ts`, `market.e2e-spec.ts`.
+**Non vérifié** : aucun appel avec une **vraie clé Coinbase** (le JWT est valide par test, pas contre Coinbase) ; aucun appel CoinMarketCap (pas de clé) ; la réponse exacte de `key_permissions` n'est connue que par la documentation ; la migration (`ALTER TYPE … ADD VALUE`) n'a pas été appliquée sur PostgreSQL.
+
 ## À prévoir (hors étapes livrées)
 
 | Sujet | Pourquoi |
@@ -606,6 +633,7 @@ Réel : **l'image Docker construite puis exécutée** sur une base jetable et un
 | Ordres stop natifs sur la plateforme | Voir D84 : la protection actuelle est un contrôle par minute, sans effet si l'application est arrêtée ; un ordre stop posé côté plateforme protégerait aussi pendant une panne. |
 | Réconciliation périodique des soldes | Le portefeuille est déclaratif (D32) et diverge de la plateforme (frais, dépôts) : lire les soldes réels (`fetchBalance`) et signaler l'écart, ce qui permettrait aussi d'inclure les pertes dues aux ordres dans la perte journalière (D43). |
 | Passerelle d'ordres pour Kraken | Voir D18 : sans vérificateur de permissions ni passerelle, Kraken reste refusé. |
+| Trading LIVE sur Coinbase | Voir D142 : devise de cotation propre à chaque plateforme (USD/USDC) ; aujourd'hui tout est coté en USDT. |
 | Rapport du matin : stablecoins et soldes | La maquette mentionne « 4 200 USDC disponibles » ; sans lecture des soldes sur la plateforme (module d'ordres), le rapport ne couvre que les positions déclarées. |
 | Rapport du matin : « Hier » | Voir D67 : le front lit le rapport `TODAY` précédent ; l'enum `YESTERDAY` est inutilisé. À retirer lors d'une prochaine migration du schéma. |
 | Purge des anciens rapports | La table `digest_reports` grossit d'une ligne par jour et par utilisateur (plus une par semaine). |

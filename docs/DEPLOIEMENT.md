@@ -38,6 +38,7 @@ se renouvellerait plus (le client serait déconnecté toutes les 15 minutes). Un
 | `BACKGROUND_JOBS_ENABLED` | `true` (valeur par défaut) sur l'**unique** exemplaire de l'API |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Pour le Push (`npm run vapid:generate`) |
 | `TELEGRAM_BOT_TOKEN`, `SMTP_*`, `EMAIL_FROM` | Facultatifs : canaux Telegram et e-mail |
+| `COINGECKO_API_KEY`, `COINGECKO_PLAN`, `COINMARKETCAP_API_KEY` | Facultatifs : sources de prix de secours et données de marché (étape 32). Sans elles, CoinGecko public seulement |
 | `RUN_MIGRATIONS` | `false` seulement si les migrations sont lancées à part |
 | `SWAGGER_ENABLED` | `true` seulement pour rouvrir la documentation `/docs` |
 

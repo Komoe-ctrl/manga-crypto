@@ -18,6 +18,7 @@ import {
   type ExchangeVerifier,
   type PermissionCheck,
 } from './verification/exchange-verifier.js';
+import { CoinbaseVerifier } from './verification/coinbase.verifier.js';
 import { VerifierRegistry } from './verification/verifier.registry.js';
 
 const dto = {
@@ -45,7 +46,10 @@ function build(initial: () => Promise<PermissionCheck> = async () => ok) {
     exchange: Exchange.BINANCE,
     verify: vi.fn(initial),
   } satisfies ExchangeVerifier;
-  const registry = new VerifierRegistry(verifier as never);
+  const registry = new VerifierRegistry(
+    verifier as never,
+    new CoinbaseVerifier(),
+  );
   const service = new ExchangesService(
     asPrisma,
     encryption,
