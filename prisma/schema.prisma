@@ -29,6 +29,7 @@ enum TradingMode {
 enum Exchange {
   BINANCE
   KRAKEN
+  COINBASE
 }
 
 enum ExchangeStatus {

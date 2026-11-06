@@ -875,3 +875,49 @@ Voir le tableau de `docs/DEPLOIEMENT.md`.
 
 **Reste à faire** : choisir la plateforme et le domaine, déployer, essayer la restauration sur la vraie base, essayer l'installation et le Push sur le téléphone du client.
 
+---
+
+## Étape 32 : Coinbase, CoinGecko et CoinMarketCap
+
+### Ce qui est livré
+- **Coinbase** comme plateforme d'échange : enregistrement et vérification de la clé (refus si elle peut transférer des fonds).
+- **CoinGecko** et **CoinMarketCap** comme sources de données de marché.
+- Prix du portefeuille : **Binance, puis CoinGecko, puis CoinMarketCap** en secours.
+- `GET /api/market/coins?symbols=BTC,ETH` : prix, capitalisation, rang, variation 24 h.
+
+### Brancher Coinbase
+1. Sur coinbase.com/settings/api, créer une clé **Coinbase Developer Platform** avec les droits **View** et **Trade** seulement. **Ne pas cocher « Transfer »** : la clé serait refusée (D141).
+2. Dans l'application, ajouter une plateforme `COINBASE` : `apiKey` = le nom de la clé (`organizations/…/apiKeys/…`), `apiSecret` = la clé privée complète (`-----BEGIN EC PRIVATE KEY-----` … `-----END EC PRIVATE KEY-----`).
+3. La clé passe en `ACTIVE` une fois ses permissions relevées. **Le trading LIVE sur Coinbase n'est pas encore possible** (D142) : les ordres sont cotés en USDT.
+
+### Brancher les sources de marché
+| Variable | Effet |
+|---|---|
+| *(aucune)* | CoinGecko public, sans clé, quotas bas : suffisant pour un usage personnel |
+| `COINGECKO_API_KEY` | Clé de l'offre Demo (gratuite) : quotas plus larges |
+| `COINGECKO_PLAN=pro` | Avec une clé Pro : bascule sur `pro-api.coingecko.com` |
+| `COINMARKETCAP_API_KEY` | Active CoinMarketCap (offre Basic gratuite suffisante) ; sans elle, la source est absente |
+
+### Organisation du code
+| Fichier | Rôle |
+|---|---|
+| `src/exchanges/verification/coinbase.verifier.ts` | JWT ES256 et lecture de `key_permissions` |
+| `src/market/market-source.ts` | Interface commune et cache de 60 s |
+| `src/market/coingecko.source.ts`, `coinmarketcap.source.ts` | Les deux sources |
+| `src/market/market.service.ts`, `market.controller.ts`, `market.module.ts` | La route `/market/coins` et la construction des sources |
+| `src/portfolio/price/fallback-price.provider.ts` | Bascule entre sources, utilisée par la valorisation |
+| `prisma/migrations/20261106120000_add_coinbase_exchange` | Valeur `COINBASE` de l'enum `Exchange` |
+
+### Diagnostiquer
+| Symptôme | Cause probable |
+|---|---|
+| Clé Coinbase refusée (« Withdrawal ») | La clé a le droit **Transfer** : en créer une sans |
+| Clé Coinbase « refusée par la plateforme » | `apiKey` doit être le *nom* complet de la clé, `apiSecret` le PEM entier (retours à la ligne ou `\n` littéraux acceptés) |
+| `/api/market/coins` répond 503 | Toutes les sources sont en panne ou à leur limite de requêtes : ajouter une clé CoinGecko, ou attendre |
+| `complete: false` | Une source était en panne : certains actifs peuvent manquer |
+| Pas de variation ni de courbe quand Binance est en panne | Normal avec CoinMarketCap seul : pas d'historique (D144) |
+
+### Vérifications
+`npm run typecheck`, `npm run lint`, `npm test`, `npm run test:e2e` : voir la PR. Vérifications réelles et limites dans D146.
+
+**Reste à faire** : essayer avec une vraie clé Coinbase (lecture) et une clé CoinMarketCap ; trading LIVE sur Coinbase (D142) ; affichage dans `crypto-web` (types générés depuis `/docs-json`).

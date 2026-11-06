@@ -1,6 +1,7 @@
 import { Injectable, UnprocessableEntityException } from '@nestjs/common';
 import type { Exchange } from '../../generated/prisma/enums.js';
 import { BinanceVerifier } from './binance.verifier.js';
+import { CoinbaseVerifier } from './coinbase.verifier.js';
 import type { ExchangeVerifier } from './exchange-verifier.js';
 
 /**
@@ -11,8 +12,11 @@ import type { ExchangeVerifier } from './exchange-verifier.js';
 export class VerifierRegistry {
   private readonly verifiers: Map<Exchange, ExchangeVerifier>;
 
-  constructor(binance: BinanceVerifier) {
-    this.verifiers = new Map([[binance.exchange, binance]]);
+  constructor(binance: BinanceVerifier, coinbase: CoinbaseVerifier) {
+    this.verifiers = new Map<Exchange, ExchangeVerifier>([
+      [binance.exchange, binance],
+      [coinbase.exchange, coinbase],
+    ]);
   }
 
   get(exchange: Exchange): ExchangeVerifier {

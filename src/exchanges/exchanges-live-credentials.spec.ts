@@ -10,6 +10,7 @@ import type {
   ExchangeVerifier,
   PermissionCheck,
 } from './verification/exchange-verifier.js';
+import { CoinbaseVerifier } from './verification/coinbase.verifier.js';
 import { VerifierRegistry } from './verification/verifier.registry.js';
 
 const ok: PermissionCheck = {
@@ -41,7 +42,7 @@ function build() {
     asPrisma,
     encryption,
     new AuditService(asPrisma),
-    new VerifierRegistry(verifier as never),
+    new VerifierRegistry(verifier as never, new CoinbaseVerifier()),
   );
   return { prisma, service, verifier };
 }

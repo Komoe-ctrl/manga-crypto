@@ -30,7 +30,11 @@ export class CreateExchangeConfigDto {
   /** Secret. Chiffré avant stockage, jamais renvoyé. */
   @ApiProperty({ writeOnly: true })
   @IsString()
-  @Matches(/^\S{8,256}$/, { message: 'apiSecret invalide' })
+  // Une clé privée PEM (Coinbase) contient des espaces et des retours à la ligne ; les autres secrets n'en ont pas.
+  @Matches(
+    /^(\S{8,256}|-----BEGIN [A-Z ]+-----[\s\S]{20,1500}-----END [A-Z ]+-----\s*)$/,
+    { message: 'apiSecret invalide' },
+  )
   apiSecret: string;
 
   @ApiPropertyOptional({
